@@ -14,11 +14,12 @@ const FETCH_TIMEOUT_MS = 10_000;
 async function resolveSSRFValidator(): Promise<
   (url: string) => Promise<{ url: string; pinnedUrl: string }>
 > {
-  // Dynamic import works for both ESM (nemoclaw dist) and TypeScript source
-  // (vitest transforms .ts files on the fly during testing).
+  // Cross-package import suppressed from rootDir type-checking; the compiled
+  // .js file exists at runtime. Tests intercept via vi.mock on the same path.
   // eslint-disable-next-line @typescript-eslint/no-require-imports
-  const mod = await import("../../nemoclaw/src/blueprint/ssrf.js");
-  return mod.validateEndpointUrl;
+  // @ts-ignore
+  const mod = await import("../../nemoclaw/src/blueprint/ssrf.js"); // tsc: rootDir
+  return (mod as { validateEndpointUrl: (url: string) => Promise<{ url: string; pinnedUrl: string }> }).validateEndpointUrl;
 }
 
 /**

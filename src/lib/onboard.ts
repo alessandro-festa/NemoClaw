@@ -99,7 +99,7 @@ const sandboxState = require("./sandbox-state");
 const validation = require("./validation");
 const urlUtils = require("./url-utils");
 const buildContext = require("./build-context");
-const dashboard = require("./dashboard");
+const dashboardContract = require("./dashboard-contract");
 const httpProbe = require("./http-probe");
 const modelPrompts = require("./model-prompts");
 const providerModels = require("./provider-models");
@@ -1393,16 +1393,6 @@ function patchStagedDockerfile(
     dockerfile = dockerfile.replace(
       /^ARG NEMOCLAW_REASONING=.*$/m,
       `ARG NEMOCLAW_REASONING=${reasoning}`,
-    );
-  }
-  // NEMOCLAW_AGENT_TIMEOUT — override agents.defaults.timeoutSeconds at build
-  // time. Lets users increase the per-request inference timeout without
-  // editing the Dockerfile. Ref: issue #2281
-  const agentTimeout = process.env.NEMOCLAW_AGENT_TIMEOUT;
-  if (agentTimeout && POSITIVE_INT_RE.test(agentTimeout)) {
-    dockerfile = dockerfile.replace(
-      /^ARG NEMOCLAW_AGENT_TIMEOUT=.*$/m,
-      `ARG NEMOCLAW_AGENT_TIMEOUT=${agentTimeout}`,
     );
   }
   // Honor NEMOCLAW_PROXY_HOST / NEMOCLAW_PROXY_PORT exported in the host
@@ -6063,13 +6053,19 @@ function syncPresetSelection(
 
 const CONTROL_UI_PORT = DASHBOARD_PORT;
 
-// Dashboard helpers — delegated to src/lib/dashboard.ts
-// isLoopbackHostname — see urlUtils import above
-const { resolveDashboardForwardTarget, buildControlUiUrls } = dashboard;
+// Dashboard helpers — delegated to src/lib/dashboard-contract.ts
+const {
+  buildChain,
+  buildControlUiUrls,
+  buildAuthenticatedDashboardUrl: contractBuildAuthenticatedDashboardUrl,
+  getDashboardAccessInfo: contractGetDashboardAccessInfo,
+  getDashboardGuidanceLines: contractGetDashboardGuidanceLines,
+} = dashboardContract;
 
 function ensureDashboardForward(sandboxName, chatUiUrl = `http://127.0.0.1:${CONTROL_UI_PORT}`) {
-  const portToStop = getDashboardForwardPort(chatUiUrl);
-  const forwardTarget = getDashboardForwardTarget(chatUiUrl);
+  const chain = buildChain({ chatUiUrl, isWsl: isWsl() });
+  const portToStop = String(chain.port);
+  const forwardTarget = chain.forwardTarget;
   // Detect port already claimed by a different sandbox and fail fast with an
   // actionable message rather than silently stealing that sandbox's forward.
   // (Same sandbox is always allowed — covers reconnect and resume paths.)
@@ -6159,98 +6155,6 @@ function fetchGatewayAuthTokenFromSandbox(sandboxName) {
   }
 }
 
-// buildControlUiUrls — see dashboard import above
-
-function getDashboardForwardPort(
-  chatUiUrl = process.env.CHAT_UI_URL || `http://127.0.0.1:${CONTROL_UI_PORT}`,
-) {
-  const forwardTarget = resolveDashboardForwardTarget(chatUiUrl);
-  return forwardTarget.includes(":")
-    ? (forwardTarget.split(":").pop() ?? String(CONTROL_UI_PORT))
-    : forwardTarget;
-}
-
-function getDashboardForwardTarget(
-  chatUiUrl = process.env.CHAT_UI_URL || `http://127.0.0.1:${CONTROL_UI_PORT}`,
-  options = {},
-) {
-  const port = getDashboardForwardPort(chatUiUrl);
-  return isWsl(options) ? `0.0.0.0:${port}` : resolveDashboardForwardTarget(chatUiUrl);
-}
-
-function getDashboardForwardStartCommand(sandboxName, options = {}) {
-  const chatUiUrl =
-    options.chatUiUrl || process.env.CHAT_UI_URL || `http://127.0.0.1:${CONTROL_UI_PORT}`;
-  const forwardTarget = getDashboardForwardTarget(chatUiUrl, options);
-  return `${openshellShellCommand(
-    ["forward", "start", "--background", forwardTarget, sandboxName],
-    options,
-  )}`;
-}
-
-function buildAuthenticatedDashboardUrl(baseUrl, token = null) {
-  if (!token) return baseUrl;
-  return `${baseUrl}#token=${encodeURIComponent(token)}`;
-}
-
-function getWslHostAddress(options = {}) {
-  if (options.wslHostAddress) {
-    return options.wslHostAddress;
-  }
-  if (!isWsl(options)) {
-    return null;
-  }
-  const runCaptureFn = options.runCapture || runCapture;
-  const output = runCaptureFn("hostname -I 2>/dev/null", { ignoreError: true });
-  const candidates = String(output || "")
-    .trim()
-    .split(/\s+/)
-    .filter(Boolean);
-  return candidates[0] || null;
-}
-
-function getDashboardAccessInfo(sandboxName, options = {}) {
-  const token = Object.prototype.hasOwnProperty.call(options, "token")
-    ? options.token
-    : fetchGatewayAuthTokenFromSandbox(sandboxName);
-  const chatUiUrl =
-    options.chatUiUrl || process.env.CHAT_UI_URL || `http://127.0.0.1:${CONTROL_UI_PORT}`;
-  const dashboardPort = Number(getDashboardForwardPort(chatUiUrl));
-  const dashboardAccess = buildControlUiUrls(token, dashboardPort).map((url, index) => ({
-    label: index === 0 ? "Dashboard" : `Alt ${index}`,
-    url: buildAuthenticatedDashboardUrl(url, null),
-  }));
-
-  const wslHostAddress = getWslHostAddress(options);
-  if (wslHostAddress) {
-    const wslUrl = buildAuthenticatedDashboardUrl(
-      `http://${wslHostAddress}:${dashboardPort}/`,
-      token,
-    );
-    if (!dashboardAccess.some((access) => access.url === wslUrl)) {
-      dashboardAccess.push({ label: "VS Code/WSL", url: wslUrl });
-    }
-  }
-
-  return dashboardAccess;
-}
-
-function getDashboardGuidanceLines(dashboardAccess = [], options = {}) {
-  const dashboardPort = getDashboardForwardPort(
-    options.chatUiUrl || process.env.CHAT_UI_URL || `http://127.0.0.1:${CONTROL_UI_PORT}`,
-  );
-  const guidance = [`Port ${dashboardPort} must be forwarded before opening these URLs.`];
-  if (isWsl(options)) {
-    guidance.push(
-      "WSL detected: if localhost fails in Windows, use the WSL host IP shown by `hostname -I`.",
-    );
-  }
-  if (dashboardAccess.length === 0) {
-    guidance.push("No dashboard URLs were generated.");
-  }
-  return guidance;
-}
-
 /** Print the post-onboard dashboard with sandbox status and reconfiguration hints. */
 function printDashboard(sandboxName, model, provider, nimContainer = null, agent = null) {
   const nimStat = nimContainer ? nim.nimStatusByName(nimContainer) : nim.nimStatus(sandboxName);
@@ -6268,8 +6172,10 @@ function printDashboard(sandboxName, model, provider, nimContainer = null, agent
   else if (provider === "ollama-local") providerLabel = "Local Ollama";
 
   const token = fetchGatewayAuthTokenFromSandbox(sandboxName);
-  const dashboardAccess = getDashboardAccessInfo(sandboxName, { token });
-  const guidanceLines = getDashboardGuidanceLines(dashboardAccess);
+  const chatUiUrl = process.env.CHAT_UI_URL || `http://127.0.0.1:${CONTROL_UI_PORT}`;
+  const chain = buildChain({ chatUiUrl, isWsl: isWsl() });
+  const dashboardAccess = contractGetDashboardAccessInfo(chain, token);
+  const guidanceLines = contractGetDashboardGuidanceLines(chain, dashboardAccess, { isWsl: isWsl() });
 
   console.log("");
   console.log(`  ${"─".repeat(50)}`);
@@ -6286,18 +6192,7 @@ function printDashboard(sandboxName, model, provider, nimContainer = null, agent
     agentOnboard.printDashboardUi(sandboxName, token, agent, {
       note,
       buildControlUiUrls: (tokenValue, port) => {
-        const urls = buildControlUiUrls(tokenValue, port);
-        const wslHostAddress = getWslHostAddress();
-        if (wslHostAddress) {
-          const wslUrl = buildAuthenticatedDashboardUrl(
-            `http://${wslHostAddress}:${port}/`,
-            tokenValue,
-          );
-          if (!urls.includes(wslUrl)) {
-            urls.push(wslUrl);
-          }
-        }
-        return urls;
+        return buildControlUiUrls(tokenValue, port, chatUiUrl);
       },
     });
   } else if (token) {
@@ -6441,9 +6336,7 @@ async function onboard(opts = {}) {
       session = onboardSession.loadSession();
       if (!session || session.resumable === false) {
         console.error("  No resumable onboarding session was found.");
-        console.error("  --resume only continues an interrupted onboarding run.");
-        console.error("  To change configuration on an existing sandbox, rebuild it:");
-        console.error("    nemoclaw onboard");
+        console.error("  Run: nemoclaw onboard");
         process.exit(1);
       }
       const sessionFrom = session?.metadata?.fromDockerfile || null;
@@ -6899,13 +6792,12 @@ module.exports = {
   pruneStaleSandboxEntry,
   repairRecordedSandbox,
   recoverGatewayRuntime,
-  resolveDashboardForwardTarget,
+  buildChain,
+  buildControlUiUrls,
+  buildAuthenticatedDashboardUrl: contractBuildAuthenticatedDashboardUrl,
+  getDashboardAccessInfo: contractGetDashboardAccessInfo,
+  getDashboardGuidanceLines: contractGetDashboardGuidanceLines,
   startGateway,
-  buildAuthenticatedDashboardUrl,
-  getDashboardAccessInfo,
-  getDashboardForwardPort,
-  getDashboardForwardStartCommand,
-  getDashboardGuidanceLines,
   startGatewayForRecovery,
   runCaptureOpenshell,
   setupInference,

@@ -6734,7 +6734,46 @@ async function onboard(opts = {}) {
     let nimContainer = session?.nimContainer || null;
     let webSearchConfig = session?.webSearchConfig || null;
     let forceProviderSelection = false;
+
+    // ── Remote-mode (US-501/502/503): fetch config from SUSE AI Factory operator ──
+    const remoteMode = process.env.NEMOCLAW_REMOTE_MODE === "1";
+    if (remoteMode) {
+      console.log("  Fetching remote configuration from SUSE AI Factory operator...");
+      const { fetchRemoteConfig } = require("./remote-config-fetch");
+      const remoteConfig = await fetchRemoteConfig(
+        process.env.NEMOCLAW_SERVER_URL,
+        process.env.NEMOCLAW_API_KEY,
+      );
+      console.log(`  ✓ Remote config received (blueprint ${remoteConfig.blueprintId} v${remoteConfig.blueprintVersion})`);
+      model = remoteConfig.inferenceModel;
+      provider = remoteConfig.inferenceProviderType;
+      endpointUrl = remoteConfig.inferenceEndpoint;
+      preferredInferenceApi = "openai";
+      // Record provider_selection step as complete so the session is resumable.
+      startRecordedStep("provider_selection", { sandboxName });
+      onboardSession.markStepComplete("provider_selection", {
+        sandboxName,
+        provider,
+        model,
+        endpointUrl,
+        credentialEnv: null,
+        preferredInferenceApi,
+        nimContainer: null,
+      });
+      // Record inference step — gateway wiring is handled by createSandbox.
+      startRecordedStep("inference", { sandboxName, provider, model });
+      onboardSession.markStepComplete("inference", { sandboxName, provider, model, nimContainer: null });
+    }
+
     while (true) {
+      // In remote mode, provider/model are already populated from the remote config;
+      // skip the interactive provider selection and inference steps entirely.
+      if (remoteMode) {
+        skippedStepMessage("provider_selection", `${provider} / ${model} (remote)`);
+        skippedStepMessage("inference", "configured remotely");
+        break;
+      }
+
       const resumeProviderSelection =
         !forceProviderSelection &&
         resume &&

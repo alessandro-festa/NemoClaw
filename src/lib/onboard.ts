@@ -109,6 +109,7 @@ const providerModels = require("./provider-models");
 const sandboxCreateStream = require("./sandbox-create-stream");
 const validationRecovery = require("./validation-recovery");
 const webSearch = require("./web-search");
+const { fetchRemoteConfig } = require("./remote-config-fetch");
 
 import { listChannels } from "./sandbox-channels";
 
@@ -3028,11 +3029,17 @@ async function preflight() {
     }
   }
 
-  // Required ports — gateway and the dashboard port
-  const requiredPorts = [
-    { port: GATEWAY_PORT, label: "OpenShell gateway" },
-    { port: DASHBOARD_PORT, label: "NemoClaw dashboard" },
-  ];
+  // Required ports — gateway and the dashboard port. In remote mode (#56)
+  // we don't spawn a local gateway, so the gateway port doesn't need to be
+  // free — it may legitimately be in use by a port-forward or a LB tunnel
+  // pointing at the in-cluster gateway.
+  const remoteMode = process.env.NEMOCLAW_REMOTE_MODE === "1";
+  const requiredPorts = remoteMode
+    ? [{ port: DASHBOARD_PORT, label: "NemoClaw dashboard" }]
+    : [
+        { port: GATEWAY_PORT, label: "OpenShell gateway" },
+        { port: DASHBOARD_PORT, label: "NemoClaw dashboard" },
+      ];
   for (const { port, label } of requiredPorts) {
     let portCheck = await checkPortAvailable(port);
     if (!portCheck.ok) {
@@ -3336,6 +3343,173 @@ async function startGatewayWithOptions(_gpu, { exitOnFailure = true } = {}) {
 
 async function startGateway(_gpu) {
   return startGatewayWithOptions(_gpu, { exitOnFailure: true });
+}
+
+// Remote-mode (#56) replacement for startGateway: instead of spawning a local
+// openshell cluster daemon, verify the in-cluster gateway provided by the
+// SUSE AI Factory operator is reachable, then export OPENSHELL_GATEWAY_ENDPOINT
+// so all subsequent openshell-cli invocations route through it
+// (see openshell-cli/src/main.rs: --gateway-endpoint / OPENSHELL_GATEWAY_ENDPOINT).
+//
+// `probe` is injected for unit tests; production callers pass the default.
+async function connectToRemoteGateway(
+  endpoint: string,
+  probe = httpProbe.runCurlProbe,
+): Promise<void> {
+  // Dev override: when OPENSHELL_GATEWAY_ENDPOINT is already set in the
+  // environment (e.g., the user is bridging via `kubectl port-forward` to
+  // a localhost URL because the operator-published URL isn't reachable
+  // from their laptop), respect it and probe THAT instead of the
+  // RemoteConfig value. Only applied when the variable was set BEFORE
+  // nemoclaw started — we still set the env var ourselves below for the
+  // common case.
+  const override = process.env.OPENSHELL_GATEWAY_ENDPOINT;
+  if (override && override !== endpoint) {
+    console.log(
+      `  ⓘ Using OPENSHELL_GATEWAY_ENDPOINT override from environment: ${override} ` +
+        `(operator advertised: ${endpoint})`,
+    );
+    endpoint = override;
+  }
+  console.log("  Connecting to remote OpenShell gateway");
+  const result = probe([
+    "-sS",
+    "-o",
+    "/dev/null",
+    "-w",
+    "%{http_code}",
+    "--max-time",
+    "5",
+    endpoint,
+  ]);
+  // curlStatus !== 0 means curl couldn't establish a connection at all
+  // (DNS NXDOMAIN, ECONNREFUSED, timeout, etc.). Any HTTP status — even
+  // 404 — means the gateway is reachable; the root path doesn't have to
+  // respond 200 for the connection check to pass. We don't use `ok` here
+  // because runCurlProbe sets `ok=false` on any non-2xx, which would
+  // wrongly reject reachable gateways serving 4xx on `/`.
+  if (result.curlStatus !== 0) {
+    throw new Error(
+      `Remote gateway ${endpoint} is unreachable. ` +
+        `Check that the URL is correct and the gateway is exposed externally. ` +
+        `curl said: ${result.stderr || result.message || "no error output"}`,
+    );
+  }
+  process.env.OPENSHELL_GATEWAY_ENDPOINT = endpoint;
+  console.log(`  ✓ Connected to remote gateway: ${endpoint}`);
+}
+
+// Remote-mode (#56) configuration of the pre-deployed cluster sandbox.
+// Resolves the assistant for the api-key (one Sandbox CR per user) via the
+// operator's /v1/assistants endpoint, then `kubectl exec`s into the Pod and
+// runs `openclaw onboard --non-interactive ...` so the openclaw config is
+// written. No local sandbox is built or spawned.
+async function configureRemoteAssistant(remoteConfig: { gatewayEndpoint: string; sandboxImage?: string }): Promise<void> {
+  const { spawnSync } = require("node:child_process");
+  const { listRemoteAssistants } = require("./remote-assistants");
+
+  const apiKey = process.env.NEMOCLAW_API_KEY;
+  const serverUrl = process.env.NEMOCLAW_SERVER_URL;
+  if (!apiKey || !serverUrl) {
+    throw new Error("Remote-mode requires NEMOCLAW_API_KEY and NEMOCLAW_SERVER_URL");
+  }
+
+  // Preflight: kubectl on PATH.
+  const which = spawnSync("which", ["kubectl"], { encoding: "utf8" });
+  if (which.status !== 0) {
+    console.error("  kubectl not found in PATH.");
+    console.error("  Install kubectl and ensure your kubeconfig points at the cluster running aif-nc.");
+    process.exit(1);
+  }
+
+  // Resolve the assistant. /v1/assistants is user-scoped so we fetch the
+  // list and pick the first entry — there's exactly one assistant per
+  // (user, deployment) pair under our current operator semantics.
+  console.log("");
+  console.log("  [remote] Fetching pre-deployed assistant from operator...");
+  let assistants: Array<{ name: string; namespace: string; podName: string; status: string }> = [];
+  try {
+    assistants = await listRemoteAssistants(serverUrl, apiKey);
+  } catch (err) {
+    console.error(`  Failed to list assistants: ${err instanceof Error ? err.message : String(err)}`);
+    process.exit(1);
+  }
+  if (assistants.length === 0) {
+    console.error("  No pre-deployed assistant found for this api-key.");
+    console.error("  Set sharedSandboxDisposition: PreDeployInCluster on the Deployment to opt in.");
+    process.exit(1);
+  }
+  const assistant = assistants[0];
+  if (assistant.status !== "Running") {
+    console.error(`  Assistant '${assistant.name}' pod is in phase '${assistant.status}', not Running.`);
+    process.exit(1);
+  }
+  console.log(`  ✓ Resolved ${assistant.namespace}/${assistant.podName}`);
+
+  // Run openclaw onboard inside the pod with all skip flags so it writes
+  // the config without prompts. --auth-choice skip because the inference
+  // auth is owned by the gateway/operator, not by openclaw.
+  console.log("  [remote] Configuring openclaw inside the assistant pod...");
+  const result = spawnSync(
+    "kubectl",
+    [
+      "exec",
+      "-n", assistant.namespace,
+      assistant.podName,
+      "--",
+      "openclaw", "onboard",
+      "--non-interactive",
+      "--accept-risk",
+      "--mode", "local",
+      "--auth-choice", "skip",
+      "--skip-channels",
+      "--skip-search",
+      "--skip-daemon",
+      "--skip-health",
+    ],
+    { stdio: "inherit" },
+  );
+  if (result.error || (result.status ?? 0) !== 0) {
+    console.error(`  kubectl exec failed (status ${result.status ?? "?"})`);
+    if (result.error) console.error(`    ${result.error.message}`);
+    process.exit(1);
+  }
+
+  // Start the openclaw gateway daemon in the background so `openclaw tui`
+  // can connect to it on ws://127.0.0.1:18789 when the user later
+  // `nemoclaw connect`s in. setsid + nohup + disown are belt-and-suspenders
+  // so the daemon survives this exec terminating.
+  console.log("  [remote] Starting openclaw gateway daemon in the pod...");
+  const gwResult = spawnSync(
+    "kubectl",
+    [
+      "exec",
+      "-n", assistant.namespace,
+      assistant.podName,
+      "--",
+      "/bin/sh", "-c",
+      // Skip if already running. The gateway forks into a process named
+      // 'openclaw-gateway' so we match either the launch command or the
+      // running process. Otherwise launch detached.
+      "pgrep -f 'openclaw[- ]gateway' >/dev/null 2>&1 || " +
+        "(nohup setsid openclaw gateway run >/tmp/openclaw-gateway.log 2>&1 < /dev/null & disown) ; sleep 2",
+    ],
+    { stdio: "inherit" },
+  );
+  if (gwResult.error || (gwResult.status ?? 0) !== 0) {
+    console.warn(`  ⚠ Could not start openclaw gateway (status ${gwResult.status ?? "?"})`);
+    console.warn("    You may need to start it manually inside the pod with: openclaw gateway run");
+  } else {
+    console.log("  ✓ openclaw gateway daemon running");
+  }
+
+  console.log("");
+  console.log(`  ✓ Assistant '${assistant.name}' is configured and ready.`);
+  console.log(`    Connect with:`);
+  console.log(`      nemoclaw ${assistant.name} connect --api-key <your-api-key> --server-url ${serverUrl}`);
+  console.log(`    Then run inside the pod:`);
+  console.log(`      openclaw tui`);
+  console.log("");
 }
 
 async function startGatewayForRecovery(_gpu) {
@@ -6877,53 +7051,77 @@ async function onboard(opts = {}) {
       onboardSession.markStepComplete("preflight");
     }
 
-    const gatewayStatus = runCaptureOpenshell(["status"], { ignoreError: true });
-    const gatewayInfo = runCaptureOpenshell(["gateway", "info", "-g", GATEWAY_NAME], {
-      ignoreError: true,
-    });
-    const activeGatewayInfo = runCaptureOpenshell(["gateway", "info"], { ignoreError: true });
-    let gatewayReuseState = getGatewayReuseState(gatewayStatus, gatewayInfo, activeGatewayInfo);
-
-    // Verify the gateway container is actually running — openshell CLI metadata
-    // can be stale after a manual `docker rm`. See #2020.
-    if (gatewayReuseState === "healthy") {
-      const containerState = verifyGatewayContainerRunning();
-      if (containerState === "missing") {
-        console.log("  Gateway metadata is stale (container not running). Cleaning up...");
-        runOpenshell(["forward", "stop", String(DASHBOARD_PORT)], { ignoreError: true });
-        destroyGateway();
-        registry.clearAll();
-        gatewayReuseState = "missing";
-        console.log("  ✓ Stale gateway metadata cleaned up");
-      } else if (containerState === "unknown") {
-        console.log(
-          "  Warning: could not verify gateway container state (Docker may be unavailable). Proceeding with cached health status.",
-        );
-      }
+    // Remote-mode (#56): when --api-key/--server-url were provided, fetch the
+    // RemoteConfig up front so the gateway step can branch on it. We don't
+    // spawn a local openshell cluster in remote mode — instead we point all
+    // subsequent openshell-cli calls at the in-cluster gateway via env var.
+    const remoteMode = process.env.NEMOCLAW_REMOTE_MODE === "1";
+    let remoteConfig: any = null;
+    if (remoteMode) {
+      console.log("  Fetching remote configuration from SUSE AI Factory operator...");
+      remoteConfig = await fetchRemoteConfig(
+        process.env.NEMOCLAW_SERVER_URL,
+        process.env.NEMOCLAW_API_KEY,
+      );
+      console.log(
+        `  ✓ Remote config received (blueprint ${remoteConfig.blueprintId} v${remoteConfig.blueprintVersion})`,
+      );
     }
 
-    const canReuseHealthyGateway = gatewayReuseState === "healthy";
-    const resumeGateway =
-      resume && session?.steps?.gateway?.status === "complete" && canReuseHealthyGateway;
-    if (resumeGateway) {
-      skippedStepMessage("gateway", "running");
-    } else if (!resume && canReuseHealthyGateway) {
-      skippedStepMessage("gateway", "running", "reuse");
-      note("  Reusing healthy NemoClaw gateway.");
-    } else {
-      if (resume && session?.steps?.gateway?.status === "complete") {
-        if (gatewayReuseState === "active-unnamed") {
-          note("  [resume] Gateway is active but named metadata is missing; recreating it safely.");
-        } else if (gatewayReuseState === "foreign-active") {
-          note("  [resume] A different OpenShell gateway is active; NemoClaw will not reuse it.");
-        } else if (gatewayReuseState === "stale") {
-          note("  [resume] Recorded gateway is unhealthy; recreating it.");
-        } else {
-          note("  [resume] Recorded gateway state is unavailable; recreating it.");
+    if (!remoteMode) {
+      const gatewayStatus = runCaptureOpenshell(["status"], { ignoreError: true });
+      const gatewayInfo = runCaptureOpenshell(["gateway", "info", "-g", GATEWAY_NAME], {
+        ignoreError: true,
+      });
+      const activeGatewayInfo = runCaptureOpenshell(["gateway", "info"], { ignoreError: true });
+      let gatewayReuseState = getGatewayReuseState(gatewayStatus, gatewayInfo, activeGatewayInfo);
+
+      // Verify the gateway container is actually running — openshell CLI metadata
+      // can be stale after a manual `docker rm`. See #2020.
+      if (gatewayReuseState === "healthy") {
+        const containerState = verifyGatewayContainerRunning();
+        if (containerState === "missing") {
+          console.log("  Gateway metadata is stale (container not running). Cleaning up...");
+          runOpenshell(["forward", "stop", String(DASHBOARD_PORT)], { ignoreError: true });
+          destroyGateway();
+          registry.clearAll();
+          gatewayReuseState = "missing";
+          console.log("  ✓ Stale gateway metadata cleaned up");
+        } else if (containerState === "unknown") {
+          console.log(
+            "  Warning: could not verify gateway container state (Docker may be unavailable). Proceeding with cached health status.",
+          );
         }
       }
+
+      const canReuseHealthyGateway = gatewayReuseState === "healthy";
+      const resumeGateway =
+        resume && session?.steps?.gateway?.status === "complete" && canReuseHealthyGateway;
+      if (resumeGateway) {
+        skippedStepMessage("gateway", "running");
+      } else if (!resume && canReuseHealthyGateway) {
+        skippedStepMessage("gateway", "running", "reuse");
+        note("  Reusing healthy NemoClaw gateway.");
+      } else {
+        if (resume && session?.steps?.gateway?.status === "complete") {
+          if (gatewayReuseState === "active-unnamed") {
+            note("  [resume] Gateway is active but named metadata is missing; recreating it safely.");
+          } else if (gatewayReuseState === "foreign-active") {
+            note("  [resume] A different OpenShell gateway is active; NemoClaw will not reuse it.");
+          } else if (gatewayReuseState === "stale") {
+            note("  [resume] Recorded gateway is unhealthy; recreating it.");
+          } else {
+            note("  [resume] Recorded gateway state is unavailable; recreating it.");
+          }
+        }
+        startRecordedStep("gateway");
+        await startGateway(gpu);
+        onboardSession.markStepComplete("gateway");
+      }
+    } else {
+      // Remote mode: skip the local gateway daemon entirely.
+      await connectToRemoteGateway(remoteConfig.gatewayEndpoint);
       startRecordedStep("gateway");
-      await startGateway(gpu);
       onboardSession.markStepComplete("gateway");
     }
 
@@ -6937,16 +7135,9 @@ async function onboard(opts = {}) {
     let webSearchConfig = session?.webSearchConfig || null;
     let forceProviderSelection = false;
 
-    // ── Remote-mode (US-501/502/503): fetch config from SUSE AI Factory operator ──
-    const remoteMode = process.env.NEMOCLAW_REMOTE_MODE === "1";
+    // ── Remote-mode (US-501/502/503): apply inference fields from the
+    // RemoteConfig fetched above (gateway-step block also consumes it).
     if (remoteMode) {
-      console.log("  Fetching remote configuration from SUSE AI Factory operator...");
-      const { fetchRemoteConfig } = require("./remote-config-fetch");
-      const remoteConfig = await fetchRemoteConfig(
-        process.env.NEMOCLAW_SERVER_URL,
-        process.env.NEMOCLAW_API_KEY,
-      );
-      console.log(`  ✓ Remote config received (blueprint ${remoteConfig.blueprintId} v${remoteConfig.blueprintVersion})`);
       model = remoteConfig.inferenceModel;
       provider = remoteConfig.inferenceProviderType;
       endpointUrl = remoteConfig.inferenceEndpoint;
@@ -6965,6 +7156,18 @@ async function onboard(opts = {}) {
       // Record inference step — gateway wiring is handled by createSandbox.
       startRecordedStep("inference", { sandboxName, provider, model });
       onboardSession.markStepComplete("inference", { sandboxName, provider, model, nimContainer: null });
+    }
+
+    // ── Remote-mode (#56): configure the pre-deployed cluster sandbox ──
+    // In cluster mode the sandbox already exists as a Pod (the operator
+    // pre-created it via the Sandbox CR). We don't build / push / spawn
+    // anything locally — we just write the openclaw config inside the Pod
+    // by exec-ing `openclaw onboard --non-interactive` with all the right
+    // skip flags. After this the user can `nemoclaw <name> connect ...`
+    // and `openclaw tui` works immediately.
+    if (remoteMode) {
+      await configureRemoteAssistant(remoteConfig);
+      return;
     }
 
     while (true) {
@@ -7265,6 +7468,7 @@ module.exports = {
   copyBuildContextDir,
   classifySandboxCreateFailure,
   configureWebSearch,
+  connectToRemoteGateway,
   createSandbox,
   ensureValidatedBraveSearchCredential,
   formatEnvAssignment,

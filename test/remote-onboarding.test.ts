@@ -8,7 +8,7 @@ import { extractRemoteOnboardArgs } from "../src/lib/onboard-command";
 // Hoist the SSRF mock at module level so it intercepts the dynamic import
 // inside remote-config-fetch.ts regardless of test-suite execution order.
 const mockValidateEndpointUrl = vi.fn<[string], Promise<{ url: string; pinnedUrl: string }>>();
-vi.mock("../nemoclaw/src/blueprint/ssrf.js", () => ({
+vi.mock("../nemoclaw/dist/blueprint/ssrf.js", () => ({
   validateEndpointUrl: mockValidateEndpointUrl,
 }));
 

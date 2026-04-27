@@ -1286,7 +1286,39 @@ function showStatus() {
   });
 }
 
-async function listSandboxes() {
+async function listSandboxes(args: string[] = []) {
+  // Remote mode: when --api-key/--server-url are present, query the
+  // SUSE AI Factory operator's /v1/assistants endpoint and print that
+  // instead of the local registry.
+  const { extractRemoteArgs } = require("./lib/remote-args");
+  const { listRemoteAssistants } = require("./lib/remote-assistants");
+  const { remoteMode, apiKey, serverUrl } = extractRemoteArgs(args, process.env);
+  if (remoteMode) {
+    try {
+      const assistants = await listRemoteAssistants(serverUrl, apiKey);
+      console.log("");
+      if (assistants.length === 0) {
+        console.log("  No remote assistants registered for this api-key.");
+        console.log("");
+        return;
+      }
+      console.log(`  Remote assistants (operator: ${serverUrl}):`);
+      for (const a of assistants) {
+        const status = a.status || "Unknown";
+        console.log(`    ${a.name}`);
+        console.log(`      namespace: ${a.namespace}  status: ${status}  user: ${a.ownerUser}`);
+        console.log(`      gateway:   ${a.gatewayURL}`);
+      }
+      console.log("");
+      console.log(`  Connect with: nemoclaw <name> connect --api-key <key> --server-url ${serverUrl}`);
+      console.log("");
+    } catch (err) {
+      console.error(`  Failed to list remote assistants: ${err instanceof Error ? err.message : String(err)}`);
+      process.exit(1);
+    }
+    return;
+  }
+
   const opsBinList = resolveOpenshell();
   const sessionDeps = opsBinList ? createSessionDeps(opsBinList) : null;
 
@@ -1322,6 +1354,57 @@ async function listSandboxes() {
 }
 
 // ── Sandbox-scoped actions ───────────────────────────────────────
+
+// Remote-mode connect (#56): the sandbox lives in a Kubernetes Pod that the
+// SUSE AI Factory operator pre-deployed. We resolve its (namespace, podName)
+// via /v1/assistants/<name>, then `kubectl exec -it` into it. No openshell
+// gateway involvement here — this is a thin SSH-equivalent shell, useful for
+// running `openclaw onboard && openclaw tui` interactively. The kubeconfig
+// + cluster reachability are the user's responsibility.
+async function sandboxConnectRemote(name: string, apiKey: string, serverUrl: string): Promise<void> {
+  const { spawnSync } = require("node:child_process");
+  const { getRemoteAssistant } = require("./lib/remote-assistants");
+
+  // Preflight: kubectl on PATH.
+  const which = spawnSync("which", ["kubectl"], { encoding: "utf8" });
+  if (which.status !== 0) {
+    console.error("  kubectl not found in PATH.");
+    console.error("  Install kubectl and ensure your kubeconfig points at the cluster running aif-nc.");
+    process.exit(1);
+  }
+
+  // Resolve assistant from operator.
+  let assistant;
+  try {
+    assistant = await getRemoteAssistant(serverUrl, apiKey, name);
+  } catch (err) {
+    console.error(`  Failed to resolve assistant '${name}': ${err instanceof Error ? err.message : String(err)}`);
+    process.exit(1);
+  }
+  if (assistant.status !== "Running") {
+    console.error(`  Assistant '${name}' pod is in phase '${assistant.status}', not Running.`);
+    console.error("  Wait a moment and retry, or check the operator logs.");
+    process.exit(1);
+  }
+
+  console.log("");
+  console.log(`  Connecting to ${assistant.namespace}/${assistant.podName} (status: ${assistant.status})...`);
+  console.log("  (Inside the sandbox: run 'openclaw onboard' once, then 'openclaw tui')");
+  console.log("");
+
+  // Hand off the TTY directly. spawnSync inheriting stdio lets the user's
+  // terminal drive the interactive shell.
+  const result = spawnSync(
+    "kubectl",
+    ["exec", "-it", "-n", assistant.namespace, assistant.podName, "--", "/bin/bash", "-l"],
+    { stdio: "inherit" },
+  );
+  if (result.error) {
+    console.error(`  kubectl exec failed: ${result.error.message}`);
+    process.exit(1);
+  }
+  process.exit(result.status ?? 0);
+}
 
 async function sandboxConnect(sandboxName, { dangerouslySkipPermissions = false } = {}) {
   const { isSandboxReady, parseSandboxStatus } = require("./lib/onboard");
@@ -3498,7 +3581,7 @@ const [cmd, ...args] = process.argv.slice(2);
         await credentialsCommand(args);
         break;
       case "list":
-        await listSandboxes();
+        await listSandboxes(args);
         break;
       case "backup-all":
         backupAll();
@@ -3540,6 +3623,26 @@ const [cmd, ...args] = process.argv.slice(2);
     "channels",
     "",
   ];
+  // Remote mode: when --api-key/--server-url are present and the named
+  // sandbox isn't in the local registry, route the action to the remote
+  // operator's pre-deployed sandboxes (#56). For now only `connect` is
+  // wired; other actions print a "not yet implemented" stub so the flag
+  // surface is uniform.
+  {
+    const { extractRemoteArgs } = require("./lib/remote-args");
+    const probe = extractRemoteArgs(args, process.env, { error: () => {}, exit: () => undefined as never });
+    if (probe.remoteMode && !registry.getSandbox(cmd) && sandboxActions.includes(args[0] || "")) {
+      const action = args[0] || "connect";
+      if (action !== "connect") {
+        console.error(`  Remote-mode action '${action}' is not yet implemented for assistants.`);
+        console.error("  Only 'connect' is supported today; track at github.com/alessandro-festa/claude.");
+        process.exit(1);
+      }
+      await sandboxConnectRemote(cmd, probe.apiKey, probe.serverUrl);
+      return;
+    }
+  }
+
   if (!registry.getSandbox(cmd) && sandboxActions.includes(args[0] || "")) {
     validateName(cmd, "sandbox name");
     await recoverRegistryEntries({ requestedSandboxName: cmd });

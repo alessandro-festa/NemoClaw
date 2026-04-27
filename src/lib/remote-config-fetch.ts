@@ -12,14 +12,31 @@ const FETCH_TIMEOUT_MS = 10_000;
  * NemoClaw installation; tests override this via vi.mock().
  */
 async function resolveSSRFValidator(): Promise<
-  (url: string) => Promise<{ url: string; pinnedUrl: string }>
+  (
+    url: string,
+    options?: { allowPrivate?: boolean },
+  ) => Promise<{ url: string; pinnedUrl: string }>
 > {
-  // Cross-package import suppressed from rootDir type-checking; the compiled
-  // .js file exists at runtime. Tests intercept via vi.mock on the same path.
+  // Import the plugin's compiled output rather than its TypeScript source.
+  // The plugin's package.json declares "type": "module" and its tsc emits
+  // ESM into nemoclaw/dist/. Pointing this import at src/ instead makes the
+  // root tsc build (module: commonjs) follow the cross-package path and leak
+  // a CJS-emitted ssrf.js next to the .ts source — which Node's ESM loader
+  // then rejects at runtime with
+  // "ReferenceError: exports is not defined in ES module scope".
+  // Pre-requisite: the plugin must be built (`cd nemoclaw && npm run build`)
+  // before the CLI runs. The standard install flow does this.
   // eslint-disable-next-line @typescript-eslint/no-require-imports
   // @ts-ignore
-  const mod = await import("../../nemoclaw/src/blueprint/ssrf.js"); // tsc: rootDir
-  return (mod as { validateEndpointUrl: (url: string) => Promise<{ url: string; pinnedUrl: string }> }).validateEndpointUrl;
+  const mod = await import("../../nemoclaw/dist/blueprint/ssrf.js");
+  return (
+    mod as {
+      validateEndpointUrl: (
+        url: string,
+        options?: { allowPrivate?: boolean },
+      ) => Promise<{ url: string; pinnedUrl: string }>;
+    }
+  ).validateEndpointUrl;
 }
 
 /**
@@ -40,7 +57,11 @@ export async function fetchRemoteConfig(
   const validateEndpointUrl = await resolveSSRFValidator();
 
   // Validate and SSRF-check the server URL before making any request.
-  await validateEndpointUrl(serverUrl);
+  // NEMOCLAW_ALLOW_PRIVATE_SERVER=1 unblocks dev/demo setups where the
+  // operator runs on a private IP (e.g., a lima VM at 192.168.x.x). The
+  // validator emits a console warning when this is in effect.
+  const allowPrivate = process.env.NEMOCLAW_ALLOW_PRIVATE_SERVER === "1";
+  await validateEndpointUrl(serverUrl, { allowPrivate });
 
   const base = serverUrl.replace(/\/$/, "");
   const url = `${base}/v1/onboarding?apikey=${encodeURIComponent(apiKey)}`;

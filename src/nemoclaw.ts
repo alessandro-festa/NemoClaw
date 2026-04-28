@@ -1401,6 +1401,38 @@ async function sandboxConnectRemote(name: string, apiKey: string, serverUrl: str
   process.exit(exitCode);
 }
 
+// Remote-mode disconnect: scales the operator-managed Sandbox CR back to 0
+// without touching the workspace PVC or the api-key. Mirrors the auth path
+// of sandboxConnectRemote — same operator endpoint family.
+async function sandboxDisconnectRemote(name: string, apiKey: string, serverUrl: string): Promise<void> {
+  const { fetchDisconnectIntent, ConnectIntentError } = require("./lib/remote-connect");
+
+  console.log("");
+  console.log(`  Requesting disconnect-intent for sandbox '${name}'...`);
+
+  try {
+    const resp = await fetchDisconnectIntent(serverUrl, apiKey, name);
+    console.log(`  Sandbox '${resp.sandboxName}' scaled to ${resp.replicas} (was ${resp.status}).`);
+    console.log("  Workspace and api-key are preserved — reconnect with: nemoclaw " + name + " connect");
+    process.exit(0);
+  } catch (err) {
+    if (err instanceof ConnectIntentError) {
+      console.error(`  ${err.message}`);
+      switch (err.status) {
+        case 401:
+          console.error("  Hint: the api key is invalid or revoked. Re-onboard.");
+          break;
+        case 404:
+          console.error(`  Hint: no sandbox named '${name}' is registered for this api key.`);
+          break;
+      }
+      process.exit(1);
+    }
+    console.error(`  ${err instanceof Error ? err.message : String(err)}`);
+    process.exit(1);
+  }
+}
+
 async function sandboxConnect(sandboxName, { dangerouslySkipPermissions = false } = {}) {
   const { isSandboxReady, parseSandboxStatus } = require("./lib/onboard");
   await ensureLiveSandboxOrExit(sandboxName, { allowNonReadyPhase: true });
@@ -3604,6 +3636,7 @@ const [cmd, ...args] = process.argv.slice(2);
   // command, attempt recovery — the sandbox may still be live with a stale registry.
   const sandboxActions = [
     "connect",
+    "disconnect",
     "status",
     "logs",
     "policy-add",
@@ -3628,13 +3661,17 @@ const [cmd, ...args] = process.argv.slice(2);
     const probe = extractRemoteArgs(args, process.env, { error: () => {}, exit: () => undefined as never });
     if (probe.remoteMode && !registry.getSandbox(cmd) && sandboxActions.includes(args[0] || "")) {
       const action = args[0] || "connect";
-      if (action !== "connect") {
-        console.error(`  Remote-mode action '${action}' is not yet implemented for assistants.`);
-        console.error("  Only 'connect' is supported today; track at github.com/alessandro-festa/claude.");
-        process.exit(1);
+      if (action === "connect") {
+        await sandboxConnectRemote(cmd, probe.apiKey, probe.serverUrl);
+        return;
       }
-      await sandboxConnectRemote(cmd, probe.apiKey, probe.serverUrl);
-      return;
+      if (action === "disconnect") {
+        await sandboxDisconnectRemote(cmd, probe.apiKey, probe.serverUrl);
+        return;
+      }
+      console.error(`  Remote-mode action '${action}' is not yet implemented for assistants.`);
+      console.error("  Only 'connect' and 'disconnect' are supported today; track at github.com/alessandro-festa/claude.");
+      process.exit(1);
     }
   }
 
@@ -3665,6 +3702,14 @@ const [cmd, ...args] = process.argv.slice(2);
         await sandboxConnect(cmd, {
           dangerouslySkipPermissions: actionArgs.includes("--dangerously-skip-permissions"),
         });
+        break;
+      case "disconnect":
+        // Local mode has no operator-managed scale-down — disconnect is a
+        // remote-mode-only verb today. For locally-registered sandboxes the
+        // closest equivalent is `destroy`, which already exists.
+        console.error(`  'disconnect' is a remote-mode action (operator-managed sandboxes only).`);
+        console.error(`  For locally-registered sandboxes use 'nemoclaw ${cmd} destroy' instead.`);
+        process.exit(1);
         break;
       case "status":
         await sandboxStatus(cmd);
@@ -3817,7 +3862,7 @@ const [cmd, ...args] = process.argv.slice(2);
       default:
         console.error(`  Unknown action: ${action}`);
         console.error(
-          `  Valid actions: connect, status, logs, policy-add, policy-remove, policy-list, skill, snapshot, rebuild, shields, config, channels, destroy`,
+          `  Valid actions: connect, disconnect, status, logs, policy-add, policy-remove, policy-list, skill, snapshot, rebuild, shields, config, channels, destroy`,
         );
         process.exit(1);
     }

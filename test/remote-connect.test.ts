@@ -6,9 +6,11 @@ import { AddressInfo } from "node:net";
 import * as http from "node:http";
 import {
   fetchConnectIntent,
+  fetchDisconnectIntent,
   openConnectTunnel,
   ConnectIntentError,
   type ConnectIntentResponse,
+  type DisconnectIntentResponse,
 } from "../src/lib/remote-connect";
 
 // Hoist the SSRF mock at module level so it intercepts the dynamic import
@@ -128,6 +130,93 @@ describe("fetchConnectIntent", () => {
 
     await expect(fetchConnectIntent("https://aif.example.com", "k")).rejects.toThrow(
       "Connect-intent response does not match expected schema",
+    );
+  });
+});
+
+// ── fetchDisconnectIntent ───────────────────────────────────────────────────
+
+describe("fetchDisconnectIntent", () => {
+  const validResp: DisconnectIntentResponse = {
+    sandboxName: "sandbox-alice",
+    namespace: "deploy1-eng",
+    status: "scaled-down",
+    scaledAt: "2026-04-28T13:00:00Z",
+    replicas: 0,
+  };
+
+  beforeEach(() => {
+    mockValidateEndpointUrl.mockReset();
+    vi.unstubAllGlobals();
+    mockValidateEndpointUrl.mockResolvedValue({
+      url: "https://aif.example.com",
+      pinnedUrl: "https://aif.example.com",
+    });
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("returns a parsed response on a 200 ok", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue({
+        ok: true,
+        status: 200,
+        statusText: "OK",
+        json: async () => validResp,
+      }),
+    );
+    const got = await fetchDisconnectIntent("https://aif.example.com", "k", "sandbox-alice");
+    expect(got).toEqual(validResp);
+  });
+
+  it("posts to /v1/disconnect-intent with bearer auth and the sandbox name", async () => {
+    const fetchSpy = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      statusText: "OK",
+      json: async () => validResp,
+    });
+    vi.stubGlobal("fetch", fetchSpy);
+
+    await fetchDisconnectIntent("https://aif.example.com", "secret-key", "sandbox-alice");
+    const [url, init] = fetchSpy.mock.calls[0];
+    expect(url).toBe("https://aif.example.com/v1/disconnect-intent");
+    expect(init.method).toBe("POST");
+    expect(init.headers.Authorization).toBe("Bearer secret-key");
+    expect(JSON.parse(init.body)).toEqual({ sandboxName: "sandbox-alice" });
+  });
+
+  it("surfaces the operator's structured error envelope on non-2xx", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue({
+        ok: false,
+        status: 401,
+        statusText: "Unauthorized",
+        json: async () => ({ error: "invalid api key" }),
+      }),
+    );
+    const err = await fetchDisconnectIntent("https://aif.example.com", "bad-key").catch((e) => e);
+    expect(err).toBeInstanceOf(ConnectIntentError);
+    expect((err as ConnectIntentError).status).toBe(401);
+    expect((err as Error).message).toContain("invalid api key");
+  });
+
+  it("rejects a schema-incompatible success payload", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue({
+        ok: true,
+        status: 200,
+        statusText: "OK",
+        json: async () => ({ status: "scaled-down" }), // missing sandboxName/namespace/replicas
+      }),
+    );
+    await expect(fetchDisconnectIntent("https://aif.example.com", "k")).rejects.toThrow(
+      "Disconnect-intent response does not match expected schema",
     );
   });
 });

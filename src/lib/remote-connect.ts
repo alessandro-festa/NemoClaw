@@ -7,7 +7,18 @@ import * as net from "node:net";
 import * as tls from "node:tls";
 import { Client as SSHClient, type ClientChannel } from "ssh2";
 
-const FETCH_TIMEOUT_MS = 10_000;
+// First-pull of multi-hundred-MB sandbox images on a cold node can run
+// 60-180s. The aif-nc operator's --scale-up-timeout default is 5 min, so
+// match that and add a small margin so the client doesn't bail out before
+// the operator does. Override with NEMOCLAW_CONNECT_INTENT_TIMEOUT_MS for
+// even-longer / shorter waits.
+const DEFAULT_FETCH_TIMEOUT_MS = 6 * 60 * 1000;
+const FETCH_TIMEOUT_MS = (() => {
+  const raw = process.env.NEMOCLAW_CONNECT_INTENT_TIMEOUT_MS;
+  if (!raw) return DEFAULT_FETCH_TIMEOUT_MS;
+  const parsed = Number(raw);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : DEFAULT_FETCH_TIMEOUT_MS;
+})();
 const CONNECT_TIMEOUT_MS = 15_000;
 
 /**
@@ -131,6 +142,86 @@ export async function fetchConnectIntent(
   return body;
 }
 
+/**
+ * Shape of POST /v1/disconnect-intent's response. Mirrors
+ * `internal/apiserver/disconnect_intent.go` DisconnectIntentResponse.
+ */
+export interface DisconnectIntentResponse {
+  sandboxName: string;
+  namespace: string;
+  status: string;
+  scaledAt: string;
+  replicas: number;
+}
+
+function isDisconnectIntentResponse(obj: unknown): obj is DisconnectIntentResponse {
+  if (typeof obj !== "object" || obj === null) return false;
+  const r = obj as Record<string, unknown>;
+  return (
+    typeof r.sandboxName === "string" &&
+    typeof r.namespace === "string" &&
+    typeof r.status === "string" &&
+    typeof r.replicas === "number"
+  );
+}
+
+/**
+ * Call POST /v1/disconnect-intent on the aif-nc operator. Patches the
+ * per-user Sandbox CR's spec.replicas back to 0 — the same lazy-off
+ * mechanism the idle scale-down loop uses, but user-triggered. PVC and
+ * ApiKey are intentionally NOT touched so reconnect picks up the same
+ * workspace + creds.
+ *
+ * Same auth + SSRF validation as fetchConnectIntent.
+ */
+export async function fetchDisconnectIntent(
+  serverUrl: string,
+  apiKey: string,
+  sandboxName?: string,
+): Promise<DisconnectIntentResponse> {
+  const validateEndpointUrl = await resolveSSRFValidator();
+  const allowPrivate = process.env.NEMOCLAW_ALLOW_PRIVATE_SERVER === "1";
+  await validateEndpointUrl(serverUrl, { allowPrivate });
+
+  const base = serverUrl.replace(/\/$/, "");
+  const url = `${base}/v1/disconnect-intent`;
+
+  let response: Response;
+  try {
+    response = await fetch(url, {
+      method: "POST",
+      headers: {
+        Accept: "application/json",
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${apiKey}`,
+      },
+      body: JSON.stringify(sandboxName ? { sandboxName } : {}),
+      // Disconnect is fast (just patches the CR); 30s is plenty even
+      // accounting for a slow apiserver.
+      signal: AbortSignal.timeout(30_000),
+    });
+  } catch (err) {
+    throw new Error(`Failed to reach operator at ${serverUrl}: ${String(err)}`);
+  }
+
+  let body: unknown;
+  try {
+    body = await response.json();
+  } catch (err) {
+    throw new Error(`Operator returned non-JSON response: ${String(err)}`);
+  }
+
+  if (!response.ok) {
+    const errMsg = (body as { error?: string })?.error || `${response.status} ${response.statusText}`;
+    throw new ConnectIntentError(response.status, errMsg, body);
+  }
+
+  if (!isDisconnectIntentResponse(body)) {
+    throw new Error("Disconnect-intent response does not match expected schema.");
+  }
+  return body;
+}
+
 export class ConnectIntentError extends Error {
   status: number;
   body: unknown;
@@ -149,12 +240,39 @@ export class ConnectIntentError extends Error {
  */
 export function openConnectTunnel(ticket: ConnectIntentResponse): Promise<net.Socket> {
   return new Promise((resolve, reject) => {
-    const isHttps = ticket.gatewayScheme === "https";
+    // Allow operators / dev environments to override the gateway endpoint —
+    // useful when the operator-advertised address (typically a NodePort on
+    // the cluster's node IP) isn't reachable from the laptop. Common case:
+    // lima/k3s on macOS, where NodePorts aren't bridged. Pair with a
+    // `kubectl port-forward svc/<gateway> <local>:<remote>` to make the
+    // override target a real listener.
+    //
+    //   NEMOCLAW_GATEWAY_HOST_OVERRIDE=127.0.0.1
+    //   NEMOCLAW_GATEWAY_PORT_OVERRIDE=30051
+    //   NEMOCLAW_GATEWAY_SCHEME_OVERRIDE=http   # optional
+    //
+    // Production users should leave these unset and let the operator's
+    // gatewayHost/Port (parsed from Status.GatewayURLs server-side) drive.
+    const overrideHost = process.env.NEMOCLAW_GATEWAY_HOST_OVERRIDE;
+    const overridePort = process.env.NEMOCLAW_GATEWAY_PORT_OVERRIDE;
+    const overrideScheme = process.env.NEMOCLAW_GATEWAY_SCHEME_OVERRIDE;
+    const effectiveHost = overrideHost || ticket.gatewayHost;
+    const effectivePort = overridePort ? Number(overridePort) : ticket.gatewayPort;
+    const effectiveScheme = overrideScheme || ticket.gatewayScheme;
+    if (overrideHost || overridePort || overrideScheme) {
+      console.error(
+        `  ⚠ Using gateway override ${effectiveScheme}://${effectiveHost}:${effectivePort} ` +
+          `(operator advertised ${ticket.gatewayScheme}://${ticket.gatewayHost}:${ticket.gatewayPort}). ` +
+          `Unset NEMOCLAW_GATEWAY_HOST_OVERRIDE / _PORT_OVERRIDE / _SCHEME_OVERRIDE for production.`,
+      );
+    }
+
+    const isHttps = effectiveScheme === "https";
     const requestModule = isHttps ? https : http;
 
     const reqOpts: http.RequestOptions | https.RequestOptions = {
-      host: ticket.gatewayHost,
-      port: ticket.gatewayPort,
+      host: effectiveHost,
+      port: effectivePort,
       method: "CONNECT",
       // The CONNECT path is the gateway's HTTP CONNECT endpoint. RFC 7231
       // §4.3.6 says CONNECT's request-target is authority-form, but the
@@ -162,6 +280,8 @@ export function openConnectTunnel(ticket: ConnectIntentResponse): Promise<net.So
       // headers for the actual target.
       path: ticket.connectPath,
       headers: {
+        // Send the operator-advertised Host header even when the actual
+        // socket goes elsewhere — the gateway uses this for routing/logging.
         Host: `${ticket.gatewayHost}:${ticket.gatewayPort}`,
         "x-sandbox-id": ticket.sandboxID,
         "x-sandbox-token": ticket.connectToken,

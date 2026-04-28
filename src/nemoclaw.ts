@@ -1357,53 +1357,48 @@ async function listSandboxes(args: string[] = []) {
 
 // Remote-mode connect (#56): the sandbox lives in a Kubernetes Pod that the
 // SUSE AI Factory operator pre-deployed. We resolve its (namespace, podName)
-// via /v1/assistants/<name>, then `kubectl exec -it` into it. No openshell
-// gateway involvement here — this is a thin SSH-equivalent shell, useful for
-// running `openclaw onboard && openclaw tui` interactively. The kubeconfig
-// + cluster reachability are the user's responsibility.
+// via the operator's POST /v1/connect-intent (which scales the sandbox 0→1
+// and mints an SSH session token), then opens an HTTP CONNECT SSH tunnel
+// through the OpenShell gateway. No kubectl, no kubeconfig — only the
+// NemoClaw binary on the user's laptop (US-505).
 async function sandboxConnectRemote(name: string, apiKey: string, serverUrl: string): Promise<void> {
-  const { spawnSync } = require("node:child_process");
-  const { getRemoteAssistant } = require("./lib/remote-assistants");
-
-  // Preflight: kubectl on PATH.
-  const which = spawnSync("which", ["kubectl"], { encoding: "utf8" });
-  if (which.status !== 0) {
-    console.error("  kubectl not found in PATH.");
-    console.error("  Install kubectl and ensure your kubeconfig points at the cluster running aif-nc.");
-    process.exit(1);
-  }
-
-  // Resolve assistant from operator.
-  let assistant;
-  try {
-    assistant = await getRemoteAssistant(serverUrl, apiKey, name);
-  } catch (err) {
-    console.error(`  Failed to resolve assistant '${name}': ${err instanceof Error ? err.message : String(err)}`);
-    process.exit(1);
-  }
-  if (assistant.status !== "Running") {
-    console.error(`  Assistant '${name}' pod is in phase '${assistant.status}', not Running.`);
-    console.error("  Wait a moment and retry, or check the operator logs.");
-    process.exit(1);
-  }
+  const { connectToRemoteSandbox, ConnectIntentError } = require("./lib/remote-connect");
 
   console.log("");
-  console.log(`  Connecting to ${assistant.namespace}/${assistant.podName} (status: ${assistant.status})...`);
+  console.log(`  Requesting connect-intent for sandbox '${name}'...`);
   console.log("  (Inside the sandbox: run 'openclaw onboard' once, then 'openclaw tui')");
   console.log("");
 
-  // Hand off the TTY directly. spawnSync inheriting stdio lets the user's
-  // terminal drive the interactive shell.
-  const result = spawnSync(
-    "kubectl",
-    ["exec", "-it", "-n", assistant.namespace, assistant.podName, "--", "/bin/bash", "-l"],
-    { stdio: "inherit" },
-  );
-  if (result.error) {
-    console.error(`  kubectl exec failed: ${result.error.message}`);
+  let exitCode: number;
+  try {
+    exitCode = await connectToRemoteSandbox({ serverUrl, apiKey, sandboxName: name });
+  } catch (err) {
+    if (err instanceof ConnectIntentError) {
+      // Surface operator-side errors with the HTTP status so the user can
+      // distinguish 504 (scale-up timeout, retry), 401 (bad api key,
+      // re-onboard), 502 (gateway down, check operator logs), 404 (sandbox
+      // missing for this api key).
+      console.error(`  ${err.message}`);
+      switch (err.status) {
+        case 504:
+          console.error("  Hint: the sandbox didn't reach Ready in time. Try again — image pull may still be in flight.");
+          break;
+        case 401:
+          console.error("  Hint: the api key is invalid or revoked. Re-run 'nemoclaw onboard --api-key … --server-url …'.");
+          break;
+        case 404:
+          console.error(`  Hint: no sandbox named '${name}' is registered for this api key.`);
+          break;
+        case 502:
+          console.error("  Hint: the operator couldn't mint a session with the gateway. Check operator logs.");
+          break;
+      }
+      process.exit(1);
+    }
+    console.error(`  ${err instanceof Error ? err.message : String(err)}`);
     process.exit(1);
   }
-  process.exit(result.status ?? 0);
+  process.exit(exitCode);
 }
 
 async function sandboxConnect(sandboxName, { dangerouslySkipPermissions = false } = {}) {

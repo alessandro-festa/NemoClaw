@@ -3651,15 +3651,23 @@ const [cmd, ...args] = process.argv.slice(2);
     "channels",
     "",
   ];
-  // Remote mode: when --api-key/--server-url are present and the named
-  // sandbox isn't in the local registry, route the action to the remote
-  // operator's pre-deployed sandboxes (#56). For now only `connect` is
-  // wired; other actions print a "not yet implemented" stub so the flag
-  // surface is uniform.
+  // Remote mode: when --api-key/--server-url are present, route the
+  // action to the remote operator's pre-deployed sandboxes (#56, #72).
+  //
+  // The remote-mode dispatch INTENTIONALLY ignores `registry.getSandbox(cmd)`:
+  // `nemoclaw onboard --api-key … --server-url …` calls `createSandbox`
+  // which calls `registry.registerSandbox` for both local AND remote
+  // modes (onboard.ts:3743). After onboard, every remote sandbox is also
+  // in the local registry — so a `!registry.getSandbox(cmd)` guard
+  // routes `disconnect` to the local-mode dispatcher instead of the
+  // operator endpoint, defeating the documented `disconnect → reconnect`
+  // UX (claude#72). Only `connect` and `disconnect` are wired today;
+  // other actions print a "not yet implemented" stub so the flag surface
+  // is uniform.
   {
     const { extractRemoteArgs } = require("./lib/remote-args");
     const probe = extractRemoteArgs(args, process.env, { error: () => {}, exit: () => undefined as never });
-    if (probe.remoteMode && !registry.getSandbox(cmd) && sandboxActions.includes(args[0] || "")) {
+    if (probe.remoteMode && sandboxActions.includes(args[0] || "")) {
       const action = args[0] || "connect";
       if (action === "connect") {
         await sandboxConnectRemote(cmd, probe.apiKey, probe.serverUrl);

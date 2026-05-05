@@ -8,6 +8,10 @@ description: "Adds, removes, or modifies allowed endpoints in the sandbox policy
 
 # Customize the NemoClaw Sandbox Network Policy
 
+## Gotchas
+
+- Custom preset hosts bypass NemoClaw's review process and can widen sandbox egress to arbitrary destinations.
+
 ## Prerequisites
 
 - A running NemoClaw sandbox for dynamic changes, or the NemoClaw source repository for static changes.

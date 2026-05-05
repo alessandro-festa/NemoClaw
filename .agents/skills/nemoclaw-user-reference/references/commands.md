@@ -1,9 +1,10 @@
 <!-- SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved. -->
 <!-- SPDX-License-Identifier: Apache-2.0 -->
-# Commands
+# CLI Commands Reference
 
 The `nemoclaw` CLI is the primary interface for managing NemoClaw sandboxes.
 It is installed automatically by the installer (`curl -fsSL https://www.nvidia.com/nemoclaw.sh | bash`).
+For guidance on when to use `nemoclaw` versus the underlying `openshell` CLI, see CLI Selection Guide (use the `nemoclaw-user-reference` skill).
 
 ## `/nemoclaw` Slash Command
 
@@ -44,7 +45,7 @@ The wizard creates an OpenShell gateway, registers inference providers, builds t
 Use this command for new installs and for recreating a sandbox after changes to policy or configuration.
 
 ```console
-$ nemoclaw onboard [--non-interactive] [--resume] [--recreate-sandbox] [--from <Dockerfile>] [--name <sandbox>] [--agent <name>] [--dangerously-skip-permissions] [--yes-i-accept-third-party-software]
+$ nemoclaw onboard [--non-interactive] [--resume] [--recreate-sandbox] [--from <Dockerfile>] [--name <sandbox>] [--agent <name>] [--control-ui-port <N>] [--yes-i-accept-third-party-software]
 ```
 
 > **Warning:** For NemoClaw-managed environments, use `nemoclaw onboard` when you need to create or recreate the OpenShell gateway or sandbox.
@@ -80,6 +81,19 @@ In non-interactive mode, set the tier with `NEMOCLAW_POLICY_TIER` (default: `bal
 $ NEMOCLAW_POLICY_TIER=restricted nemoclaw onboard --non-interactive --yes-i-accept-third-party-software
 ```
 
+`NEMOCLAW_POLICY_MODE` controls how non-interactive onboarding reconciles the tier-derived suggestions against the sandbox's currently-applied presets.
+The default is `suggested`, which is *additive*.
+Onboarding applies tier defaults and preserves any presets you previously added with [`nemoclaw <name> policy-add`](#nemoclaw-name-policy-add) across re-onboards.
+Use `custom` with `NEMOCLAW_POLICY_PRESETS` when you want the explicit list to be authoritative.
+Onboarding removes any preset that is not in the list.
+`skip` leaves the applied set untouched and does not apply tier defaults.
+
+| Value | Behaviour |
+|-------|-----------|
+| `suggested` (default) | Apply tier defaults and preserve any extra presets already applied. Aliases: `default`, `auto`. |
+| `custom` | Apply exactly `NEMOCLAW_POLICY_PRESETS`. Previously-applied presets not in the list are removed. Alias: `list`. |
+| `skip` | Skip the policy step entirely. Aliases: `none`, `no`. |
+
 If you enable Brave Search during onboarding, NemoClaw currently stores the Brave API key in the sandbox's OpenClaw configuration.
 That means the OpenClaw agent can read the key.
 NemoClaw explores an OpenShell-hosted credential path first, but the current OpenClaw Brave runtime does not consume that path end to end yet.
@@ -97,6 +111,9 @@ or:
 $ NEMOCLAW_ACCEPT_THIRD_PARTY_SOFTWARE=1 nemoclaw onboard --non-interactive
 ```
 
+For scripted installer runs, set `NEMOCLAW_NON_INTERACTIVE=1` and `NEMOCLAW_ACCEPT_THIRD_PARTY_SOFTWARE=1` before invoking `curl -fsSL https://www.nvidia.com/nemoclaw.sh | bash`.
+If the installer cannot prompt for the notice in a terminal and no explicit acceptance is set, it exits before installing Node.js or the NemoClaw CLI.
+
 To enable Brave Search in non-interactive mode, set:
 
 ```console
@@ -105,9 +122,11 @@ $ BRAVE_API_KEY=... \
 ```
 
 `BRAVE_API_KEY` enables Brave Search in non-interactive mode and also enables `web_fetch`.
+If Brave Search key validation fails in non-interactive mode, onboarding prints a warning, skips web search setup, and continues with the rest of the sandbox setup.
+After fixing the key, re-enable web search with `nemoclaw config web-search`.
 
 The wizard prompts for a sandbox name.
-Names must follow RFC 1123 subdomain rules: lowercase alphanumeric characters and hyphens only, and must start and end with an alphanumeric character.
+Names must be lowercase, start with a letter, contain only letters, numbers, and internal hyphens, and end with a letter or number.
 Uppercase letters are automatically lowercased.
 Names that match global CLI commands (`status`, `list`, `debug`, etc.) are rejected to avoid routing conflicts.
 Use `--agent <name>` to target a specific installed agent profile during onboarding.
@@ -125,6 +144,10 @@ NemoClaw bakes those values into the sandbox image as Discord guild workspace co
 If you leave the Discord User ID blank, the guild config omits the user allowlist and any member of the configured server can message the bot.
 Guild responses remain mention-gated by default unless you opt into all-message replies.
 
+If you enable Telegram during onboarding, the wizard can also prompt for whether group chats should reply only to `@mentions` or to all group messages.
+Set `TELEGRAM_REQUIRE_MENTION=1` for non-interactive onboarding when you want mention-only group replies.
+Pairing and `TELEGRAM_ALLOWED_IDS` still govern direct messages.
+
 If you run onboarding again with the same sandbox name and choose a different inference provider or model, NemoClaw detects the drift and recreates the sandbox so the running OpenClaw UI matches your selection.
 In interactive mode, the wizard asks for confirmation before delete and recreate.
 In non-interactive mode, NemoClaw recreates automatically when the stored selection is readable and differs; if NemoClaw cannot read the stored selection, NemoClaw reuses by default.
@@ -139,13 +162,28 @@ If the installed OpenShell version falls outside this range, onboarding exits wi
 
 Build the sandbox image from a custom Dockerfile instead of the stock NemoClaw image.
 The entire parent directory of the specified file is used as the Docker build context, so any files your Dockerfile references (scripts, config, etc.) must live alongside it.
+Onboarding skips common large directories (`node_modules`, `.git`, `.venv`, and `__pycache__`) while staging this context.
+It also skips credential-style files and directories such as `.env*`, `.ssh/`, `.aws/`, `.netrc`, `.npmrc`, `secrets/`, `*.pem`, and `*.key`.
+Other build outputs such as `dist/`, `target/`, or `build/` are still included.
+If the staged context is larger than 100 MB, onboarding prints a warning before the Docker build starts.
 If the directory contains unreadable files (for example, Windows system files visible in WSL), onboarding exits with an error suggesting you move the Dockerfile to a dedicated directory.
 
 ```console
 $ nemoclaw onboard --from path/to/Dockerfile
 ```
 
+The Dockerfile path must exist.
+Missing paths fail during command parsing before preflight, gateway setup, inference setup, or sandbox creation starts.
+
 The file can have any name; if it is not already named `Dockerfile`, onboard copies it to `Dockerfile` inside the staged build context automatically.
+To create an isolated build context, create a dedicated directory that contains only the Dockerfile and the files it needs:
+
+```text
+build-dir/
+├── Dockerfile
+└── files-used-by-COPY/
+```
+
 All NemoClaw build arguments (`NEMOCLAW_MODEL`, `NEMOCLAW_PROVIDER_KEY`, `NEMOCLAW_INFERENCE_BASE_URL`, etc.) are injected as `ARG` overrides at build time, so declare them in your Dockerfile if you need to reference them.
 
 In non-interactive mode, the path can also be supplied via the `NEMOCLAW_FROM_DOCKERFILE` environment variable.
@@ -160,7 +198,8 @@ If a `--resume` is attempted with a different `--from` path than the original se
 #### `--name <sandbox>`
 
 Set the sandbox name without going through the interactive prompt.
-The same RFC 1123 and reserved-name rules that the wizard enforces apply here too — names that match a NemoClaw CLI command (`status`, `list`, `debug`, etc.) are rejected up front.
+The same name format and reserved-name rules that the wizard enforces apply here too. Names must be lowercase, start with a letter, contain only letters, numbers, and internal hyphens, and end with a letter or number.
+Names that match a NemoClaw CLI command (`status`, `list`, `debug`, etc.) are rejected up front.
 
 ```console
 $ nemoclaw onboard --non-interactive --name my-build --from path/to/Dockerfile
@@ -169,28 +208,6 @@ $ nemoclaw onboard --non-interactive --name my-build --from path/to/Dockerfile
 The flag wins over `NEMOCLAW_SANDBOX_NAME`.
 When prompting is impossible (no TTY or `--non-interactive`), the env var is also honoured so existing CI scripts keep working.
 Combining `--from <Dockerfile>` with non-interactive onboarding requires one of `--name` or `NEMOCLAW_SANDBOX_NAME`; otherwise onboarding exits rather than silently defaulting to `my-assistant` and clobbering the default sandbox.
-
-#### `--dangerously-skip-permissions`
-
-> **Warning:** For development and testing only. This flag disables the sandbox's network policy and filesystem permission restrictions, so the OpenClaw agent inside the sandbox can reach any host and write anywhere in its home directory. Do not use this flag with production credentials or on hosts where other agents run.
-
-Replace the default balanced sandbox policy with the permissive policy bundled at `nemoclaw-blueprint/policies/openclaw-sandbox-permissive.yaml`. Concretely, this means:
-
-- **Network:** all known endpoints open with no HTTP method or path filtering.
-- **Filesystem:** the sandbox home directory is writable (normally Landlock-restricted).
-- **Messaging / inference:** unchanged — still gated by the provider credentials you supply.
-
-```console
-$ nemoclaw onboard --dangerously-skip-permissions
-```
-
-Onboarding prints an explicit warning at start so the reduced security posture is visible in logs. The flag is also honored via `NEMOCLAW_DANGEROUSLY_SKIP_PERMISSIONS=1` for non-interactive runs:
-
-```console
-$ NEMOCLAW_DANGEROUSLY_SKIP_PERMISSIONS=1 nemoclaw onboard --non-interactive --yes-i-accept-third-party-software
-```
-
-The flag is persisted on the sandbox registry entry, so `nemoclaw <sandbox> status` surfaces `Permissions: dangerously-skip-permissions (shields permanently down)` for sandboxes created this way. To tighten a sandbox after the fact, re-run `nemoclaw onboard` without the flag.
 
 ### `nemoclaw onboard --from`
 
@@ -204,11 +221,13 @@ $ nemoclaw onboard --from ./Dockerfile.custom
 ### `nemoclaw list`
 
 List all registered sandboxes with their model, provider, and policy presets.
+Pass `--json` for machine-readable output that includes a `schemaVersion`, the default sandbox, recovery metadata, and the sandbox inventory.
 Sandboxes with an active SSH session are marked with a `●` indicator so you can tell at a glance which sandbox you are already connected to in another terminal.
 When a sandbox has a recorded dashboard port, the output includes its local dashboard URL.
 
 ```console
 $ nemoclaw list
+$ nemoclaw list --json
 ```
 
 ### `nemoclaw deploy`
@@ -218,6 +237,8 @@ $ nemoclaw list
 
 Deploy NemoClaw to a remote GPU instance through [Brev](https://brev.nvidia.com).
 This command remains as a compatibility wrapper for the older Brev-specific bootstrap flow.
+The Brev instance name is the positional argument.
+The sandbox name comes from `NEMOCLAW_SANDBOX_NAME` and defaults to `my-assistant`; invalid sandbox names fail before Brev provisioning starts.
 
 ```console
 $ nemoclaw deploy <instance-name>
@@ -243,6 +264,19 @@ You no longer need to re-run `nemoclaw onboard` after a reboot in this case.
 $ nemoclaw my-assistant connect
 ```
 
+### `nemoclaw <name> recover`
+
+Restart the in-sandbox gateway and re-establish the host-side dashboard port-forward without opening an SSH session.
+Use this after a sandbox pod restart, a sandbox crash, or whenever `nemoclaw <name> status` reports the gateway is not running but the sandbox is alive.
+
+`recover` runs the same recovery the `connect` command performs as a side effect, but without dropping into a shell, so it is safe to call from scripts and automation.
+It is idempotent.
+If the gateway is already running, the command exits zero with a probe message and makes no changes.
+
+```console
+$ nemoclaw my-assistant recover
+```
+
 ### `nemoclaw <name> status`
 
 Show sandbox status, health, and inference configuration.
@@ -254,11 +288,13 @@ The command probes every inference provider and reports one of three states on t
 | `healthy` | The provider endpoint returned a reachable response. |
 | `unreachable` | The probe failed. The output includes the endpoint URL and a remediation hint. |
 | `not probed` | The endpoint URL is not known (for example, `compatible-*` providers). |
+| `not verified` | NemoClaw could not verify the sandbox or gateway state, so it skips inference probing. |
 
 Local providers (Ollama, vLLM) probe the host-side health endpoint.
 Remote providers (NVIDIA Endpoints, OpenAI, Anthropic, Gemini) use a lightweight reachability check; any HTTP response, including `401` or `403`, counts as reachable.
 No API keys are sent.
 For cloud-only providers, the output omits the NIM status line unless a NIM container is registered or an unexpected NIM container is running.
+If the sandbox or gateway cannot be verified, the command exits non-zero instead of reporting healthy inference from stale registry state.
 
 A `Connected` line reports whether the sandbox has any active SSH sessions and, if so, how many.
 The sandbox list in the status output includes the dashboard port suffix for sandboxes with a recorded dashboard port.
@@ -273,13 +309,30 @@ The command also tails `/tmp/gateway.log` inside the default sandbox and flags T
 $ nemoclaw my-assistant status
 ```
 
+### `nemoclaw <name> doctor`
+
+Run a focused health check for one sandbox and the host services it depends on.
+The command checks the local CLI build, Docker daemon, OpenShell CLI, NemoClaw gateway container, gateway port mapping, live sandbox state, inference route, provider reachability, messaging channel conflicts, Ollama reachability, and the cloudflared tunnel state.
+
+Warnings do not make the command fail.
+Failed checks exit non-zero so scripts can use `doctor` as a readiness gate.
+Use `--json` for machine-readable output.
+
+```console
+$ nemoclaw my-assistant doctor [--json]
+```
+
 ### `nemoclaw <name> logs`
 
 View sandbox logs.
 Use `--follow` to stream output in real time.
+Use `--tail <lines>` or `-n <lines>` to limit the number of returned lines.
+Use `--since <duration>` to show recent logs only, such as `5m`, `1h`, or `30s`.
+The command reads both OpenClaw gateway output and OpenShell audit events, so policy denials appear alongside the gateway log stream.
+If one log source is unavailable, NemoClaw prints a warning and keeps reading the remaining source.
 
 ```console
-$ nemoclaw my-assistant logs [--follow]
+$ nemoclaw my-assistant logs [--follow] [--tail <lines>|-n <lines>] [--since <duration>]
 ```
 
 ### `nemoclaw <name> gateway-token`
@@ -304,10 +357,11 @@ The command exits non-zero with a diagnostic on stderr when the sandbox is not r
 
 Stop the NIM container, remove the host-side Docker image built during onboard, and delete the sandbox.
 This removes the sandbox from the registry.
+For Ollama-backed sandboxes, `destroy` also asks Ollama to unload currently loaded models and clears stale auth proxy state on a best-effort basis.
 
 > **Warning:** This command permanently deletes the sandbox **and its persistent volume**.
-> All workspace files (use the `nemoclaw-user-workspace` skill) (SOUL.md, USER.md, IDENTITY.md, AGENTS.md, MEMORY.md, and daily memory notes) are lost.
-> Back up your workspace first with `nemoclaw <name> snapshot create` or see Backup and Restore (use the `nemoclaw-user-workspace` skill).
+> All workspace files (use the `nemoclaw-user-manage-sandboxes` skill) (SOUL.md, USER.md, IDENTITY.md, AGENTS.md, MEMORY.md, and daily memory notes) are lost.
+> Back up your workspace first with `nemoclaw <name> snapshot create` or see Backup and Restore (use the `nemoclaw-user-manage-sandboxes` skill).
 > If you want to upgrade the sandbox while preserving state, use `nemoclaw <name> rebuild` instead.
 
 If another terminal has an active SSH session to the sandbox, `destroy` prints an active-session warning and requires a second confirmation before it proceeds.
@@ -441,7 +495,7 @@ $ nemoclaw my-assistant channels remove telegram
 
 As with `channels add`, `NEMOCLAW_NON_INTERACTIVE=1` skips the rebuild prompt and queues the change for a manual `nemoclaw <name> rebuild`.
 
-Host-side removal is the supported path because `/sandbox/.openclaw/openclaw.json` is read-only at runtime; `openclaw channels remove` cannot modify the baked config from inside the sandbox.
+Host-side removal is the supported path because `/sandbox/.openclaw/openclaw.json` is baked into the container image at build time; `openclaw channels remove` inside the sandbox would modify the running config but not persist changes across rebuilds.
 
 ### `nemoclaw <name> channels stop <channel>`
 
@@ -512,6 +566,7 @@ If another terminal has an active SSH session to the sandbox, `rebuild` prints a
 Pass `--yes` or `--force` to skip the prompt in scripted workflows.
 
 The sandbox must be running for the backup step to succeed.
+If any manifest-defined state path cannot be archived, `rebuild` reports the failed paths and exits before destroying the original sandbox.
 After restore, the command runs `openclaw doctor --fix` for cross-version structure repair.
 
 ### `nemoclaw upgrade-sandboxes`
@@ -605,6 +660,57 @@ $ nemoclaw my-assistant snapshot restore 2026-04-21T07-35-55-987Z
 $ nemoclaw my-assistant snapshot restore v3 --to my-assistant-clone
 ```
 
+## `nemoclaw <name> share mount`
+
+Mount the sandbox filesystem on the host machine via SSHFS for bidirectional file sharing.
+Files edited on the host appear instantly inside the sandbox, and vice versa.
+
+```console
+$ nemoclaw my-assistant share mount
+✓ Mounted /sandbox → ~/.nemoclaw/mounts/my-assistant
+```
+
+| Argument | Default | Description |
+|----------|---------|-------------|
+| `sandbox-path` | `/sandbox` | Remote path inside the sandbox to mount |
+| `local-mount-point` | `~/.nemoclaw/mounts/<name>` | Local directory to mount onto (auto-created) |
+
+Prerequisites:
+
+- `sshfs` must be installed on the host (`sudo apt-get install sshfs` on Linux, `brew install macfuse && brew install sshfs` on macOS).
+- The sandbox must be running.
+- Sandboxes created before the `openssh-sftp-server` base image update must be rebuilt with `nemoclaw <name> rebuild`.
+
+```console
+# mount a specific path to a custom local directory
+$ nemoclaw my-assistant share mount /sandbox/workspace ~/my-workspace
+```
+
+## `nemoclaw <name> share unmount`
+
+Unmount a previously mounted sandbox filesystem.
+
+```console
+$ nemoclaw my-assistant share unmount
+```
+
+| Argument | Default | Description |
+|----------|---------|-------------|
+| `local-mount-point` | `~/.nemoclaw/mounts/<name>` | Local directory to unmount |
+
+### `nemoclaw <name> share status`
+
+Check whether the sandbox filesystem is currently mounted.
+
+```console
+$ nemoclaw my-assistant share status
+● Mounted at ~/.nemoclaw/mounts/my-assistant
+```
+
+| Argument | Default | Description |
+|----------|---------|-------------|
+| `local-mount-point` | `~/.nemoclaw/mounts/<name>` | Local directory to check |
+
 ## `openshell term`
 
 Open the OpenShell TUI to monitor sandbox activity and approve network egress requests.
@@ -628,7 +734,8 @@ $ nemoclaw tunnel start
 
 ### `nemoclaw tunnel stop`
 
-Stop host auxiliary services started by `nemoclaw tunnel start` (for example cloudflared). This does not affect messaging channels running inside the sandbox; use `nemoclaw <name> channels stop <channel>` to pause a specific bridge without destroying the sandbox.
+Stop host auxiliary services that `nemoclaw tunnel start` started (for example cloudflared). NemoClaw also tries to stop the OpenClaw gateway inside the selected or default sandbox, which stops in-sandbox messaging channel polling for that sandbox.
+Use `nemoclaw <name> channels stop <channel>` when you only want to pause one bridge without stopping the gateway.
 
 ```console
 $ nemoclaw tunnel stop
@@ -651,9 +758,11 @@ This command remains as a compatibility alias to `nemoclaw tunnel stop`.
 ### `nemoclaw status`
 
 Show the sandbox list and the status of host auxiliary services (for example cloudflared).
+Pass `--json` for machine-readable output with registered sandboxes, service state, inference routes, and messaging health.
 
 ```console
 $ nemoclaw status
+$ nemoclaw status --json
 ```
 
 ### `nemoclaw setup`
@@ -796,6 +905,21 @@ These overrides apply to onboarding, status checks, health probes, and the unins
 Defaults are unchanged when no variable is set.
 If `NEMOCLAW_DASHBOARD_PORT` or the port from `CHAT_UI_URL` is already occupied by another sandbox, onboarding scans `18789` through `18799` and uses the next free dashboard port.
 Pass `--control-ui-port <N>` to require a specific port.
+
+## NemoHermes Alias
+
+`nemohermes` is a convenience alias that pre-selects the Hermes agent.
+Every `nemohermes` command is equivalent to running `nemoclaw` with `--agent hermes` (for onboard) or `NEMOCLAW_AGENT=hermes` (for all commands).
+
+```console
+$ nemohermes onboard              # equivalent to: nemoclaw onboard --agent hermes
+$ nemohermes my-sandbox connect   # same as: nemoclaw my-sandbox connect
+$ nemohermes --help               # show NemoHermes-branded help
+$ nemohermes --version            # show the installed NemoHermes CLI version
+```
+
+The alias is installed alongside `nemoclaw` via `npm link` or `npm install -g`.
+Help text, version output, and error messages automatically adjust to show `nemohermes` when launched through the alias.
 
 ### Legacy `nemoclaw setup`
 

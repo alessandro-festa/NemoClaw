@@ -254,6 +254,29 @@ function mergePresetIntoPolicy(currentPolicy: string, presetEntries: string): st
   return YAML.stringify(output);
 }
 
+function mergePresetNamesIntoPolicy(
+  currentPolicy: string,
+  presetNames: string[],
+): { policy: string; appliedPresets: string[]; missingPresets: string[] } {
+  let merged = currentPolicy;
+  const appliedPresets: string[] = [];
+  const missingPresets: string[] = [];
+
+  for (const presetName of [...new Set(presetNames)]) {
+    const presetContent = loadPreset(presetName);
+    const presetEntries = extractPresetEntries(presetContent);
+    if (!presetEntries) {
+      missingPresets.push(presetName);
+      continue;
+    }
+
+    merged = mergePresetIntoPolicy(merged, presetEntries);
+    appliedPresets.push(presetName);
+  }
+
+  return { policy: merged, appliedPresets, missingPresets };
+}
+
 /**
  * Remove preset entries from existing policy YAML using structured YAML
  * parsing. Identifies which network_policies keys belong to the preset,
@@ -849,14 +872,9 @@ function applyPermissivePolicy(sandboxName: string): void {
     throw new Error(`Permissive policy not found: ${policyPath}`);
   }
 
-  console.log("  Applying permissive policy (--dangerously-skip-permissions)...");
+  console.log("  Applying permissive policy...");
   run(buildPolicySetCommand(policyPath, sandboxName));
   console.log("  Applied permissive policy.");
-
-  const sandbox = registry.getSandbox(sandboxName);
-  if (sandbox) {
-    registry.updateSandbox(sandboxName, { dangerouslySkipPermissions: true });
-  }
 }
 
 export {
@@ -870,6 +888,7 @@ export {
   buildPolicySetCommand,
   buildPolicyGetCommand,
   mergePresetIntoPolicy,
+  mergePresetNamesIntoPolicy,
   removePresetFromPolicy,
   applyPreset,
   applyPresetContent,

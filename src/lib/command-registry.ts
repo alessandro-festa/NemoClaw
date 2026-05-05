@@ -1,13 +1,26 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
+/* v8 ignore start -- command metadata is covered by registry unit tests. */
+
 /**
- * Typed command registry — single source of truth for all NemoClaw CLI commands.
+ * Typed command registry — single source of truth for all CLI commands.
  *
  * Every command that the CLI dispatches, documents, or prints in help() is
  * defined here. Helper functions derive GLOBAL_COMMANDS, sandboxActions,
  * help() groupings, and the canonical usage list consumed by check-docs.sh.
+ *
+ * Usage strings use "nemoclaw" as a canonical placeholder. The exported
+ * {@link brandedUsage} helper replaces it with the active CLI_NAME
+ * (e.g. "nemohermes") for display.
  */
+
+import { CLI_NAME } from "./branding";
+
+/** Replace the canonical "nemoclaw" prefix in a usage string with CLI_NAME. */
+export function brandedUsage(usage: string): string {
+  return usage.replace(/^nemoclaw/, CLI_NAME);
+}
 
 export type CommandGroup =
   | "Getting Started"
@@ -57,7 +70,7 @@ export const GROUP_ORDER: readonly CommandGroup[] = [
 ] as const;
 
 /**
- * All 46 CLI commands. This is the single source of truth.
+ * All CLI commands. This is the single source of truth.
  *
  * The order within each group matches the current help() display order.
  */
@@ -80,12 +93,20 @@ export const COMMANDS: readonly CommandDef[] = [
   {
     usage: "nemoclaw list",
     description: "List all sandboxes",
+    flags: "[--json]",
     group: "Sandbox Management",
     scope: "global",
   },
   {
     usage: "nemoclaw <name> connect",
     description: "Shell into a running sandbox",
+    flags: "[--probe-only]",
+    group: "Sandbox Management",
+    scope: "sandbox",
+  },
+  {
+    usage: "nemoclaw <name> recover",
+    description: "Restart the sandbox gateway and dashboard port-forward",
     group: "Sandbox Management",
     scope: "sandbox",
   },
@@ -96,9 +117,16 @@ export const COMMANDS: readonly CommandDef[] = [
     scope: "sandbox",
   },
   {
+    usage: "nemoclaw <name> doctor",
+    description: "Run host, gateway, sandbox, and inference health checks",
+    flags: "[--json]",
+    group: "Sandbox Management",
+    scope: "sandbox",
+  },
+  {
     usage: "nemoclaw <name> logs",
     description: "Stream sandbox logs",
-    flags: "[--follow]",
+    flags: "[--follow] [--tail <lines>|-n <lines>] [--since <duration>]",
     group: "Sandbox Management",
     scope: "sandbox",
   },
@@ -124,9 +152,30 @@ export const COMMANDS: readonly CommandDef[] = [
     scope: "sandbox",
   },
   {
+    usage: "nemoclaw <name> share mount",
+    description: "Mount sandbox filesystem on the host via SSHFS",
+    flags: "[sandbox-path] [local-mount-point]",
+    group: "Sandbox Management",
+    scope: "sandbox",
+  },
+  {
+    usage: "nemoclaw <name> share unmount",
+    description: "Unmount a previously mounted sandbox filesystem",
+    flags: "[local-mount-point]",
+    group: "Sandbox Management",
+    scope: "sandbox",
+  },
+  {
+    usage: "nemoclaw <name> share status",
+    description: "Check whether the sandbox filesystem is currently mounted",
+    flags: "[local-mount-point]",
+    group: "Sandbox Management",
+    scope: "sandbox",
+  },
+  {
     usage: "nemoclaw <name> rebuild",
     description: "Upgrade sandbox to current agent version",
-    flags: "(--yes to skip prompt)",
+    flags: "[--yes|-y|--force] [--verbose|-v]",
     group: "Sandbox Management",
     scope: "sandbox",
   },
@@ -140,7 +189,7 @@ export const COMMANDS: readonly CommandDef[] = [
   {
     usage: "nemoclaw <name> destroy",
     description: "Stop NIM + delete sandbox",
-    flags: "(--yes to skip prompt)",
+    flags: "[--yes|-y|--force]",
     group: "Sandbox Management",
     scope: "sandbox",
   },
@@ -185,24 +234,28 @@ export const COMMANDS: readonly CommandDef[] = [
   {
     usage: "nemoclaw <name> channels add",
     description: "Save credentials and rebuild",
+    flags: "<channel> [--dry-run]",
     group: "Messaging Channels",
     scope: "sandbox",
   },
   {
     usage: "nemoclaw <name> channels remove",
     description: "Clear credentials and rebuild",
+    flags: "<channel> [--dry-run]",
     group: "Messaging Channels",
     scope: "sandbox",
   },
   {
     usage: "nemoclaw <name> channels stop",
     description: "Disable channel (keeps credentials)",
+    flags: "<channel> [--dry-run]",
     group: "Messaging Channels",
     scope: "sandbox",
   },
   {
     usage: "nemoclaw <name> channels start",
     description: "Re-enable a previously stopped channel",
+    flags: "<channel> [--dry-run]",
     group: "Messaging Channels",
     scope: "sandbox",
   },
@@ -230,24 +283,25 @@ export const COMMANDS: readonly CommandDef[] = [
     hidden: true,
   },
 
-  // ── Hidden: config subcommands (undocumented) ──
+  // ── Hidden: config subcommands (advanced / security-sensitive) ──
   {
     usage: "nemoclaw <name> config get",
     description: "Get sandbox configuration",
+    flags: "[--key <dotpath>] [--format json|yaml]",
     group: "Sandbox Management",
     scope: "sandbox",
     hidden: true,
   },
   {
     usage: "nemoclaw <name> config set",
-    description: "Set sandbox configuration",
+    description: "Set sandbox configuration with SSRF validation",
     group: "Sandbox Management",
     scope: "sandbox",
     hidden: true,
   },
   {
     usage: "nemoclaw <name> config rotate-token",
-    description: "Rotate sandbox authentication token",
+    description: "Rotate sandbox provider credentials",
     group: "Sandbox Management",
     scope: "sandbox",
     hidden: true,
@@ -306,6 +360,7 @@ export const COMMANDS: readonly CommandDef[] = [
   {
     usage: "nemoclaw status",
     description: "Show sandbox list and service status",
+    flags: "[--json]",
     group: "Services",
     scope: "global",
   },
@@ -401,7 +456,6 @@ export const COMMANDS: readonly CommandDef[] = [
     scope: "global",
     hidden: true,
   },
-
 ] as const;
 
 /** All global-scope commands. */
@@ -419,12 +473,19 @@ export function visibleCommands(): CommandDef[] {
   return COMMANDS.filter((c) => !c.hidden);
 }
 
-/** Visible commands grouped by CommandGroup, ordered by GROUP_ORDER. */
+/** Visible commands grouped by CommandGroup, ordered by GROUP_ORDER.
+ *  Usage strings are branded with the active CLI_NAME. */
 export function commandsByGroup(): Map<CommandGroup, CommandDef[]> {
   const visible = visibleCommands();
   const grouped = new Map<CommandGroup, CommandDef[]>();
   for (const group of GROUP_ORDER) {
-    const cmds = visible.filter((c) => c.group === group);
+    const cmds = visible
+      .filter((c) => c.group === group)
+      .map((c) => ({
+        ...c,
+        usage: brandedUsage(c.usage),
+        description: c.description.replace(/nemoclaw/g, CLI_NAME),
+      }));
     if (cmds.length > 0) {
       grouped.set(group, cmds);
     }

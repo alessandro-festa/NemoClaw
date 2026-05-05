@@ -35,6 +35,8 @@ export const KNOWN_CREDENTIAL_ENV_KEYS: readonly string[] = [
   "COMPATIBLE_ANTHROPIC_API_KEY",
   "BRAVE_API_KEY",
   "GITHUB_TOKEN",
+  "HF_TOKEN",
+  "HUGGING_FACE_HUB_TOKEN",
   "TELEGRAM_BOT_TOKEN",
   "ALLOWED_CHAT_IDS",
   "DISCORD_BOT_TOKEN",
@@ -458,7 +460,6 @@ export function promptSecret(question: string): Promise<string> {
 
         if (ch === "\u001b") {
           const rest = text.slice(i);
-          // eslint-disable-next-line no-control-regex
           const match = rest.match(/^\u001b(?:\[[0-9;?]*[~A-Za-z]|\][^\u0007]*\u0007|.)/);
           if (match) {
             i += match[0].length - 1;

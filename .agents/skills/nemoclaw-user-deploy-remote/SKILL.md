@@ -1,6 +1,6 @@
 ---
 name: "nemoclaw-user-deploy-remote"
-description: "Explains how to run NemoClaw on a remote GPU instance, including the deprecated Brev compatibility path and the preferred installer plus onboard flow. Use when deploying NemoClaw to a remote VM, onboarding a Brev instance, or migrating away from the legacy `nemoclaw deploy` wrapper. Trigger keywords - deploy nemoclaw remote gpu, nemoclaw brev cloud deployment, nemoclaw plugins, openclaw plugins, install openclaw plugin, nemoclaw onboard from dockerfile, nemoclaw telegram, telegram bot openclaw agent, openshell channel messaging, nemoclaw sandbox hardening, container security, docker capabilities, process limits."
+description: "Explains how to run NemoClaw on a remote GPU instance, including the deprecated Brev compatibility path and the preferred installer plus onboard flow. Use when deploying NemoClaw to a remote VM, onboarding a Brev instance, or migrating away from the legacy `nemoclaw deploy` wrapper. Trigger keywords - deploy nemoclaw remote gpu, nemoclaw brev cloud deployment, nemoclaw plugins, openclaw plugins, install openclaw plugin, nemoclaw onboard from dockerfile, nemoclaw sandbox hardening, container security, docker capabilities, process limits."
 ---
 
 <!-- SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved. -->
@@ -17,6 +17,7 @@ description: "Explains how to run NemoClaw on a remote GPU instance, including t
 
 - The [Brev CLI](https://brev.nvidia.com) installed and authenticated.
 - A provider credential for the inference backend you want to use during onboarding.
+- `HF_TOKEN` or `HUGGING_FACE_HUB_TOKEN` exported when your remote vLLM or Hugging Face workflow needs access to gated models.
 - NemoClaw installed locally if you plan to use the deprecated `nemoclaw deploy` wrapper. Otherwise, install NemoClaw directly on the remote host after provisioning it.
 
 Run NemoClaw on a remote GPU instance through [Brev](https://brev.nvidia.com).
@@ -48,6 +49,9 @@ $ nemoclaw deploy <instance-name>
 ```
 
 Replace `<instance-name>` with a name for your remote instance, for example `my-gpu-box`.
+The sandbox created on the remote VM uses `NEMOCLAW_SANDBOX_NAME`, or `my-assistant` when the variable is unset.
+Sandbox names must be lowercase, start with a letter, contain only letters, numbers, and internal hyphens, and end with a letter or number.
+The deploy wrapper validates the sandbox name before it provisions the Brev instance, opens SSH, or starts the remote installer.
 
 The legacy compatibility flow performs the following steps on the VM:
 
@@ -57,6 +61,7 @@ The legacy compatibility flow performs the following steps on the VM:
 4. Starts optional host auxiliary services (for example the cloudflared tunnel) when `cloudflared` is available. Channel messaging is configured during onboarding and runs through OpenShell-managed processes, not through `nemoclaw tunnel start`.
 
 By default, the compatibility wrapper asks Brev to provision on `gcp`. Override this with `NEMOCLAW_BREV_PROVIDER` if you need a different Brev cloud provider.
+If you export `HF_TOKEN` or `HUGGING_FACE_HUB_TOKEN`, the wrapper forwards those values to the VM so remote setup can pull gated Hugging Face model repositories.
 
 ## Step 3: Connect to the Remote Sandbox
 
@@ -138,10 +143,10 @@ $ nemoclaw deploy <instance-name>
 ## References
 
 - **Load [references/install-openclaw-plugins.md](references/install-openclaw-plugins.md)** when users ask how to install, build, or configure OpenClaw plugins under NemoClaw. Explains the difference between OpenClaw plugins and agent skills, and shows the current Dockerfile-based workflow for baking a plugin into a NemoClaw sandbox.
-- **Load [references/set-up-telegram-bridge.md](references/set-up-telegram-bridge.md)** when setting up Telegram, a chat interface, or messaging integration without relying on nemoclaw tunnel start for bridges. Explains how Telegram reaches the sandboxed OpenClaw agent through OpenShell-managed processes and onboarding-time channel configuration.
 - **Load [references/sandbox-hardening.md](references/sandbox-hardening.md)** when reviewing sandbox image security controls, auditing capability drops, or looking up the runtime resource limits. Includes the sandbox container image hardening reference, covering Docker capabilities and process limits.
 
 ## Related Skills
 
+- `nemoclaw-user-manage-sandboxes` — Set Up Messaging Channels (use the `nemoclaw-user-manage-sandboxes` skill) to connect Telegram, Discord, or Slack through OpenShell-managed channel messaging
 - `nemoclaw-user-monitor-sandbox` — Monitor Sandbox Activity (use the `nemoclaw-user-monitor-sandbox` skill) for sandbox monitoring tools
 - `nemoclaw-user-reference` — Commands (use the `nemoclaw-user-reference` skill) for the full `deploy` command reference

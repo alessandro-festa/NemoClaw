@@ -43,9 +43,27 @@ describe("onboard command", () => {
       sandboxName: null,
       acceptThirdPartySoftware: true,
       agent: null,
-      dangerouslySkipPermissions: false,
       controlUiPort: null,
+      autoYes: false,
     });
+  });
+
+  it.each<{ flags: string[] }>([
+    { flags: ["--yes"] },
+    { flags: ["-y"] },
+    { flags: ["--yes", "-y"] },
+  ])("sets autoYes when invoked with $flags", ({ flags }) => {
+    const result = parseOnboardArgs(
+      flags,
+      "--yes-i-accept-third-party-software",
+      "NEMOCLAW_ACCEPT_THIRD_PARTY_SOFTWARE",
+      {
+        env: {},
+        error: () => {},
+        exit: exitWithCode,
+      },
+    );
+    expect(result.autoYes).toBe(true);
   });
 
   it("accepts the env-based third-party notice acknowledgement", () => {
@@ -69,8 +87,8 @@ describe("onboard command", () => {
       sandboxName: null,
       acceptThirdPartySoftware: true,
       agent: null,
-      dangerouslySkipPermissions: false,
       controlUiPort: null,
+      autoYes: false,
     });
   });
 
@@ -94,8 +112,8 @@ describe("onboard command", () => {
       sandboxName: null,
       acceptThirdPartySoftware: false,
       agent: null,
-      dangerouslySkipPermissions: false,
       controlUiPort: null,
+      autoYes: false,
     });
   });
 
@@ -116,8 +134,10 @@ describe("onboard command", () => {
     expect(lines.join("\n")).toContain("Usage: nemoclaw onboard");
     expect(lines.join("\n")).toContain("--from <Dockerfile>");
     expect(lines.join("\n")).toContain("--name <sandbox>");
+    expect(lines.join("\n")).toContain("Dockerfile's parent directory");
+    expect(lines.join("\n")).toContain("node_modules, .git, .venv, __pycache__");
+    expect(lines.join("\n")).toContain(".env*, .ssh, .aws");
     expect(lines.join("\n")).toContain("--agent <name>");
-    expect(lines.join("\n")).toContain("--dangerously-skip-permissions");
   });
 
   it("parses --from <Dockerfile>", () => {
@@ -145,8 +165,8 @@ describe("onboard command", () => {
       sandboxName: null,
       acceptThirdPartySoftware: false,
       agent: null,
-      dangerouslySkipPermissions: false,
       controlUiPort: null,
+      autoYes: false,
     });
   });
 
@@ -171,8 +191,8 @@ describe("onboard command", () => {
       sandboxName: null,
       acceptThirdPartySoftware: false,
       agent: null,
-      dangerouslySkipPermissions: false,
       controlUiPort: null,
+      autoYes: false,
     });
   });
 
@@ -218,8 +238,8 @@ describe("onboard command", () => {
       sandboxName: "second-assistant",
       acceptThirdPartySoftware: false,
       agent: null,
-      dangerouslySkipPermissions: false,
       controlUiPort: null,
+      autoYes: false,
     });
   });
 
@@ -293,6 +313,27 @@ describe("onboard command", () => {
     expect(errors.join("\n")).toContain("--from path not found:");
   });
 
+  it("exits before onboarding when --from points to a directory", async () => {
+    const runOnboard = vi.fn(async () => {});
+    const errors: string[] = [];
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "nemoclaw-onboard-from-dir-"));
+
+    await expect(
+      runOnboardCommand({
+        args: ["--from", tmpDir],
+        noticeAcceptFlag: "--yes-i-accept-third-party-software",
+        noticeAcceptEnv: "NEMOCLAW_ACCEPT_THIRD_PARTY_SOFTWARE",
+        env: {},
+        runOnboard,
+        error: (message = "") => errors.push(message),
+        exit: exitWithPrefixedCode,
+      }),
+    ).rejects.toThrow("exit:1");
+
+    expect(runOnboard).not.toHaveBeenCalled();
+    expect(errors.join("\n")).toContain("--from must point to a Dockerfile:");
+  });
+
   it("exits with usage on unknown args", () => {
     const errors: string[] = [];
     expect(() =>
@@ -311,10 +352,10 @@ describe("onboard command", () => {
     expect(errors.join("\n")).toContain("Usage: nemoclaw onboard");
   });
 
-  it("parses --agent and --dangerously-skip-permissions", () => {
+  it("parses --agent", () => {
     expect(
       parseOnboardArgs(
-        ["--agent", "openclaw", "--dangerously-skip-permissions"],
+        ["--agent", "openclaw"],
         "--yes-i-accept-third-party-software",
         "NEMOCLAW_ACCEPT_THIRD_PARTY_SOFTWARE",
         {
@@ -333,8 +374,8 @@ describe("onboard command", () => {
       sandboxName: null,
       acceptThirdPartySoftware: false,
       agent: "openclaw",
-      dangerouslySkipPermissions: true,
       controlUiPort: null,
+      autoYes: false,
     });
   });
 
@@ -468,8 +509,8 @@ describe("onboard command", () => {
       sandboxName: null,
       acceptThirdPartySoftware: false,
       agent: null,
-      dangerouslySkipPermissions: false,
       controlUiPort: null,
+      autoYes: false,
     });
   });
 

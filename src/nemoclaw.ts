@@ -262,6 +262,25 @@ async function main(argv: string[] = process.argv.slice(2)): Promise<void> {
     return;
   }
 
+  // SUSE remote-mode short-circuit: when both NEMOCLAW_API_KEY and
+  // NEMOCLAW_SERVER_URL are set and the action targets the remote
+  // SUSE AI Factory operator, skip the local-registry lookup entirely
+  // and route straight through oclif. The matching oclif command body
+  // (sandbox:connect / sandbox:disconnect) re-reads the same env vars
+  // and dispatches to remote-connect.ts.
+  if (
+    process.env.NEMOCLAW_API_KEY &&
+    process.env.NEMOCLAW_SERVER_URL &&
+    (requestedSandboxAction === "connect" || requestedSandboxAction === "disconnect")
+  ) {
+    validateName(cmd, "sandbox name");
+    await runDispatchResult(
+      resolveSandboxOclifDispatch(cmd, requestedSandboxAction, requestedSandboxActionArgs),
+      { sandboxName: cmd, actionArgs: requestedSandboxActionArgs },
+    );
+    return;
+  }
+
   // If the registry doesn't know this name but the action is a sandbox-scoped
   // command, attempt recovery — the sandbox may still be live with a stale registry.
   // Derived from command registry — single source of truth

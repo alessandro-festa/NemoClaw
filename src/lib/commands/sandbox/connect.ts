@@ -12,14 +12,10 @@ export default class ConnectCliCommand extends Command {
   static strict = true;
   static summary = "Shell into a running sandbox";
   static description = "Connect to a running sandbox.";
-  static usage = [
-    "<name> connect [--probe-only]",
-    "<name> connect --api-key=… --server-url=…",
-  ];
+  static usage = ["<name> connect [--probe-only]"];
   static examples = [
     "<%= config.bin %> alpha connect",
     "<%= config.bin %> alpha connect --probe-only",
-    "<%= config.bin %> alpha connect --api-key=K --server-url=https://operator",
   ];
   static args = {
     sandboxName: Args.string({ name: "sandbox", description: "Sandbox name", required: true }),
@@ -28,26 +24,16 @@ export default class ConnectCliCommand extends Command {
     help: Flags.help({ char: "h" }),
     "probe-only": Flags.boolean({ description: "Recover and check the sandbox without opening SSH" }),
     "dangerously-skip-permissions": Flags.boolean({ hidden: true }),
-    "api-key": Flags.string({
-      description: "SUSE AI Factory operator API key (connects via SSH tunnel, no kubectl)",
-      env: "NEMOCLAW_API_KEY",
-    }),
-    "server-url": Flags.string({
-      description: "SUSE AI Factory operator URL (connects via SSH tunnel, no kubectl)",
-      env: "NEMOCLAW_SERVER_URL",
-    }),
   };
 
   public async run(): Promise<void> {
-    const { args, flags } = await this.parse(ConnectCliCommand);
-    if (flags["dangerously-skip-permissions"]) {
-      console.error("  --dangerously-skip-permissions was removed; use shields commands instead.");
-      console.error(`  Usage: ${CLI_NAME} <name> connect [--probe-only]`);
-      process.exit(1);
-    }
-    const apiKey = flags["api-key"] as string | undefined;
-    const serverUrl = flags["server-url"] as string | undefined;
+    // SUSE remote-mode opt-in: SSH-tunnel via the SUSE AI Factory operator
+    // (no kubectl on the user's laptop). Activated by env vars only so we
+    // don't extend upstream's flag surface.
+    const apiKey = process.env.NEMOCLAW_API_KEY;
+    const serverUrl = process.env.NEMOCLAW_SERVER_URL;
     if (apiKey && serverUrl) {
+      const { args } = await this.parse(ConnectCliCommand);
       const exitCode = await connectToRemoteSandbox({
         serverUrl,
         apiKey,
@@ -55,8 +41,11 @@ export default class ConnectCliCommand extends Command {
       });
       process.exit(exitCode);
     }
-    if (apiKey || serverUrl) {
-      console.error("  --api-key and --server-url must be supplied together for remote connect.");
+
+    const { args, flags } = await this.parse(ConnectCliCommand);
+    if (flags["dangerously-skip-permissions"]) {
+      console.error("  --dangerously-skip-permissions was removed; use shields commands instead.");
+      console.error(`  Usage: ${CLI_NAME} <name> connect [--probe-only]`);
       process.exit(1);
     }
     await connectSandbox(args.sandboxName, {

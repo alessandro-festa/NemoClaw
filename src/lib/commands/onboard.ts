@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-import { Command, Flags } from "@oclif/core";
+import { Command } from "@oclif/core";
 
 import { runOnboardAction } from "../global-cli-actions";
 import { runRemoteOnboard } from "../remote-onboard";
@@ -20,30 +20,19 @@ export default class OnboardCliCommand extends Command {
   static description = "Configure inference, credentials, and sandbox settings.";
   static usage = onboardUsage;
   static examples = onboardExamples;
-  static flags = {
-    ...buildOnboardFlags(),
-    "api-key": Flags.string({
-      description: "SUSE AI Factory operator API key (enables remote onboarding)",
-      env: "NEMOCLAW_API_KEY",
-    }),
-    "server-url": Flags.string({
-      description: "SUSE AI Factory operator URL (enables remote onboarding)",
-      env: "NEMOCLAW_SERVER_URL",
-    }),
-  };
+  static flags = buildOnboardFlags();
 
   public async run(): Promise<void> {
-    const { flags } = await this.parse(OnboardCliCommand);
-    const apiKey = flags["api-key"] as string | undefined;
-    const serverUrl = flags["server-url"] as string | undefined;
+    // SUSE remote-mode opt-in: when both env vars are set, bypass the
+    // interactive wizard and configure against the SUSE AI Factory operator.
+    const apiKey = process.env.NEMOCLAW_API_KEY;
+    const serverUrl = process.env.NEMOCLAW_SERVER_URL;
     if (apiKey && serverUrl) {
       await runRemoteOnboard({ apiKey, serverUrl });
       return;
     }
-    if (apiKey || serverUrl) {
-      console.error("  --api-key and --server-url must be supplied together for remote onboarding.");
-      process.exit(1);
-    }
+
+    const { flags } = await this.parse(OnboardCliCommand);
     await runOnboardAction(toLegacyOnboardArgs(flags as OnboardFlags));
   }
 }

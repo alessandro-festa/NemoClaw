@@ -1,8 +1,6 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-import { Flags } from "@oclif/core";
-
 import { getSandboxInventory, renderSandboxInventoryText } from "../inventory-commands";
 import { NemoClawCommand } from "../cli/nemoclaw-oclif-command";
 import { buildListCommandDeps } from "../list-command-deps";
@@ -15,27 +13,16 @@ export default class ListCommand extends NemoClawCommand {
   static summary = "List all sandboxes";
   static description =
     "List all registered sandboxes with their model, provider, and policy presets.";
-  static usage = ["list [--json]", "list --api-key=… --server-url=… [--json]"];
-  static examples = [
-    "<%= config.bin %> list",
-    "<%= config.bin %> list --json",
-    "<%= config.bin %> list --api-key=K --server-url=https://operator",
-  ];
-  static flags = {
-    "api-key": Flags.string({
-      description: "SUSE AI Factory operator API key (enables remote listing)",
-      env: "NEMOCLAW_API_KEY",
-    }),
-    "server-url": Flags.string({
-      description: "SUSE AI Factory operator URL (enables remote listing)",
-      env: "NEMOCLAW_SERVER_URL",
-    }),
-  };
+  static usage = ["list [--json]"];
+  static examples = ["<%= config.bin %> list", "<%= config.bin %> list --json"];
+  static flags = {};
 
   public async run(): Promise<unknown> {
-    const { flags } = await this.parse(ListCommand);
-    const apiKey = flags["api-key"] as string | undefined;
-    const serverUrl = flags["server-url"] as string | undefined;
+    await this.parse(ListCommand);
+
+    // SUSE remote-mode opt-in: enumerate operator-side sandboxes.
+    const apiKey = process.env.NEMOCLAW_API_KEY;
+    const serverUrl = process.env.NEMOCLAW_SERVER_URL;
     if (apiKey && serverUrl) {
       const assistants = await listRemoteAssistants(serverUrl, apiKey);
       if (this.jsonEnabled()) {
@@ -51,9 +38,6 @@ export default class ListCommand extends NemoClawCommand {
         this.log(`    • ${a.name}  (${a.status}, ns=${a.namespace})`);
       }
       return;
-    }
-    if (apiKey || serverUrl) {
-      this.error("--api-key and --server-url must be supplied together for remote listing.");
     }
 
     const deps = buildListCommandDeps();

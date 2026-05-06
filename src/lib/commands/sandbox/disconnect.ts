@@ -10,6 +10,9 @@ import { ConnectIntentError, fetchDisconnectIntent } from "../../remote-connect"
  * spec.replicas to 0 so the pod scales down. Workspace PVC and api-key
  * survive — reconnect with `nemoclaw <name> connect`.
  *
+ * Credentials come from env vars (NEMOCLAW_API_KEY, NEMOCLAW_SERVER_URL)
+ * to keep the SUSE-specific surface out of the public CLI flag space.
+ *
  * No local-mode equivalent: in local mode the user kills their own shell
  * and the local Docker container stays running until `nemoclaw stop`.
  */
@@ -18,32 +21,27 @@ export default class DisconnectCliCommand extends Command {
   static strict = true;
   static summary = "Disconnect from a remote sandbox (scales it to 0)";
   static description =
-    "Scales the operator-managed sandbox back to 0 replicas. The workspace volume and api-key are preserved — reconnect later with `<name> connect`.";
-  static usage = ["<name> disconnect --api-key=… --server-url=…"];
-  static examples = [
-    "<%= config.bin %> alpha disconnect --api-key=K --server-url=https://operator",
-  ];
+    "Scales the operator-managed sandbox back to 0 replicas. The workspace volume and api-key are preserved — reconnect later with `<name> connect`. Requires NEMOCLAW_API_KEY and NEMOCLAW_SERVER_URL env vars.";
+  static usage = ["<name> disconnect"];
+  static examples = ["<%= config.bin %> alpha disconnect"];
   static args = {
     sandboxName: Args.string({ name: "sandbox", description: "Sandbox name", required: true }),
   };
   static flags = {
     help: Flags.help({ char: "h" }),
-    "api-key": Flags.string({
-      description: "SUSE AI Factory operator API key",
-      env: "NEMOCLAW_API_KEY",
-      required: true,
-    }),
-    "server-url": Flags.string({
-      description: "SUSE AI Factory operator URL",
-      env: "NEMOCLAW_SERVER_URL",
-      required: true,
-    }),
   };
 
   public async run(): Promise<void> {
-    const { args, flags } = await this.parse(DisconnectCliCommand);
-    const apiKey = flags["api-key"] as string;
-    const serverUrl = flags["server-url"] as string;
+    const apiKey = process.env.NEMOCLAW_API_KEY;
+    const serverUrl = process.env.NEMOCLAW_SERVER_URL;
+    if (!apiKey || !serverUrl) {
+      this.error(
+        "disconnect requires NEMOCLAW_API_KEY and NEMOCLAW_SERVER_URL env vars (set them after `nemoclaw onboard`).",
+        { exit: 1 },
+      );
+    }
+
+    const { args } = await this.parse(DisconnectCliCommand);
     const name = args.sandboxName;
 
     this.log("");

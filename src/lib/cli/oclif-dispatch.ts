@@ -76,6 +76,10 @@ const GLOBAL_ROUTES: Readonly<Record<string, string>> = {
 
 const FLAT_SANDBOX_ROUTES: Readonly<Record<string, FlatSandboxRoute>> = {
   connect: { commandId: "sandbox:connect", helpUsage: "connect" },
+  disconnect: {
+    commandId: "sandbox:disconnect",
+    helpUsage: "disconnect --api-key=… --server-url=…",
+  },
   status: { commandId: "sandbox:status", helpUsage: "status" },
   logs: {
     commandId: "sandbox:logs",

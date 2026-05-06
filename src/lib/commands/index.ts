@@ -16,6 +16,7 @@ import DeprecatedStartCommand from "./deprecated/start";
 import DeprecatedStopCommand from "./deprecated/stop";
 import DeployCliCommand from "./deploy";
 import DestroyCliCommand from "./sandbox/destroy";
+import DisconnectCliCommand from "./sandbox/disconnect";
 import GarbageCollectImagesCommand from "./maintenance/gc";
 import GatewayTokenCliCommand from "./gateway-token";
 import ListCommand from "./list";
@@ -73,6 +74,7 @@ export default {
   "sandbox:config:set": SandboxConfigSetCommand,
   "sandbox:connect": ConnectCliCommand,
   "sandbox:destroy": DestroyCliCommand,
+  "sandbox:disconnect": DisconnectCliCommand,
   "sandbox:doctor": SandboxDoctorCliCommand,
   "sandbox:gateway:token": GatewayTokenCliCommand,
   "sandbox:logs": SandboxLogsCommand,

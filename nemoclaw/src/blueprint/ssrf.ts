@@ -33,7 +33,20 @@ export interface ValidatedEndpoint {
   pinnedUrl: string;
 }
 
-export async function validateEndpointUrl(url: string): Promise<ValidatedEndpoint> {
+export interface ValidateEndpointOptions {
+  /**
+   * When true, resolved IPs in private/reserved CIDR ranges are allowed
+   * (a warning is emitted instead of throwing). Use only for dev/demo
+   * setups where the operator legitimately runs on a private IP (lima
+   * VM, homelab k8s, etc.). Production callers MUST leave this false.
+   */
+  allowPrivate?: boolean;
+}
+
+export async function validateEndpointUrl(
+  url: string,
+  options: ValidateEndpointOptions = {},
+): Promise<ValidatedEndpoint> {
   let parsed: URL;
   try {
     parsed = new URL(url);
@@ -53,10 +66,17 @@ export async function validateEndpointUrl(url: string): Promise<ValidatedEndpoin
     throw new Error(`No hostname found in URL: ${url}`);
   }
   if (isPrivateHostname(hostname)) {
-    throw new Error(
-      `Endpoint URL points to private/internal address ${hostname}. ` +
-        "Connections to internal networks are not allowed.",
-    );
+    if (options.allowPrivate) {
+      console.warn(
+        `  ⚠ Endpoint URL ${url} points to private/internal address ${hostname}. ` +
+          "Allowed because allowPrivate is set — do not use in production.",
+      );
+    } else {
+      throw new Error(
+        `Endpoint URL points to private/internal address ${hostname}. ` +
+          "Connections to internal networks are not allowed.",
+      );
+    }
   }
 
   const lookupHostname = hostnameForDnsLookup(hostname);
@@ -76,6 +96,13 @@ export async function validateEndpointUrl(url: string): Promise<ValidatedEndpoin
 
   for (const { address } of addresses) {
     if (isPrivateIp(address)) {
+      if (options.allowPrivate) {
+        console.warn(
+          `  ⚠ Endpoint URL ${url} resolves to private/internal address ${address}. ` +
+            "Allowed because allowPrivate is set — do not use in production.",
+        );
+        continue;
+      }
       throw new Error(
         `Endpoint URL resolves to private/internal address ${address}. ` +
           "Connections to internal networks are not allowed.",

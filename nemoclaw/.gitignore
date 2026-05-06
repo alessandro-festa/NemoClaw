@@ -1,0 +1,8 @@
+# Compiled TypeScript output should only ever live in dist/.
+# If a stray `tsc` invocation ever drops .js/.d.ts next to a .ts source
+# under src/, do not let it sneak into a commit — Node's ESM loader
+# rejects CJS-emitted siblings of "type": "module" files.
+src/**/*.js
+src/**/*.js.map
+src/**/*.d.ts
+src/**/*.d.ts.map

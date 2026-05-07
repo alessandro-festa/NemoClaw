@@ -11,6 +11,9 @@
 #   messaging-compatible-endpoint-e2e
 #                            Validates Telegram + OpenAI-compatible endpoint inference routing
 #                            through inference.local with a hermetic local mock (#2766).
+#   kimi-inference-compat-e2e
+#                            Validates Kimi K2.6 safe exec splitting through OpenClaw trajectories
+#                            with a hermetic OpenAI-compatible mock (#2620).
 #   token-rotation-e2e       Validates that rotating a messaging token and re-running onboard
 #                            propagates the new credential to the sandbox. Combined Telegram +
 #                            Discord + Slack coverage with cross-talk assertions. See issue #1903.
@@ -51,6 +54,7 @@ on:
           Valid: cloud-e2e, cloud-onboard-e2e, cloud-inference-e2e,
           skill-agent-e2e, docs-validation-e2e, messaging-providers-e2e,
           messaging-compatible-endpoint-e2e,
+          kimi-inference-compat-e2e,
           token-rotation-e2e, sandbox-survival-e2e,
           issue-2478-crash-loop-recovery-e2e, hermes-e2e, hermes-discord-e2e,
           sandbox-operations-e2e, inference-routing-e2e,
@@ -61,7 +65,8 @@ on:
           rebuild-hermes-stale-base-e2e, double-onboard-e2e,
           onboard-repair-e2e, onboard-resume-e2e, runtime-overrides-e2e,
           credential-sanitization-e2e, telegram-injection-e2e,
-          overlayfs-autofix-e2e, launchable-smoke-e2e, gpu-e2e, gpu-double-onboard-e2e
+          overlayfs-autofix-e2e, device-auth-health-e2e,
+          launchable-smoke-e2e, gpu-e2e, gpu-double-onboard-e2e
         required: false
         type: string
         default: ""
@@ -309,6 +314,54 @@ jobs:
         with:
           name: install-log-messaging-compatible-endpoint
           path: /tmp/nemoclaw-e2e-messaging-compatible-endpoint-install.log
+          if-no-files-found: ignore
+
+  # ── Kimi inference compatibility regression (#2620) ───────────
+  # Hermetic OpenAI-compatible endpoint path. The mock emits one combined
+  # Kimi exec tool call (`hostname; date; uptime`) and the test asserts the
+  # sandbox trajectory records three split exec calls with clean completion.
+  kimi-inference-compat-e2e:
+    if: >-
+      github.repository == 'NVIDIA/NemoClaw' &&
+      (github.event_name != 'workflow_dispatch' ||
+       inputs.jobs == '' ||
+       contains(format(',{0},', inputs.jobs), ',kimi-inference-compat-e2e,'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Run Kimi inference compatibility E2E test
+        env:
+          NEMOCLAW_NON_INTERACTIVE: "1"
+          NEMOCLAW_ACCEPT_THIRD_PARTY_SOFTWARE: "1"
+          NEMOCLAW_SANDBOX_NAME: "e2e-kimi-compat"
+          GITHUB_TOKEN: ${{ github.token }}
+        run: bash test/e2e/test-kimi-inference-compat.sh
+
+      - name: Upload onboard log on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: install-log-kimi-inference-compat
+          path: /tmp/nemoclaw-e2e-kimi-inference-compat-onboard.log
+          if-no-files-found: ignore
+
+      - name: Upload build/setup log on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-log-kimi-inference-compat
+          path: /tmp/nemoclaw-e2e-kimi-inference-compat-build.log
+          if-no-files-found: ignore
+
+      - name: Upload agent log on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: agent-log-kimi-inference-compat
+          path: /tmp/nemoclaw-e2e-kimi-inference-compat-agent.log
           if-no-files-found: ignore
 
   # ── Token rotation (credential propagation to L7 proxy) ─────
@@ -1366,6 +1419,42 @@ jobs:
             /tmp/nemoclaw-e2e-onboard-negative.log
           if-no-files-found: ignore
 
+  # ── Device Auth Health Probe (#2342) ────────────────────────────
+  # Regression test for #2342: verifies health probes work correctly when
+  # device auth is enabled (the default). Previously `curl -sf` treated
+  # HTTP 401 as failure, causing false "Health Offline" readings.
+  # Validates: /health returns 200, / returns 401, status != Offline,
+  # gateway recovery with device auth, port forward liveness.
+  device-auth-health-e2e:
+    if: >-
+      github.repository == 'NVIDIA/NemoClaw' &&
+      (github.event_name != 'workflow_dispatch' ||
+       inputs.jobs == '' ||
+       contains(format(',{0},', inputs.jobs), ',device-auth-health-e2e,'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Run device auth health E2E
+        env:
+          NVIDIA_API_KEY: ${{ secrets.NVIDIA_API_KEY }}
+          NEMOCLAW_NON_INTERACTIVE: "1"
+          NEMOCLAW_ACCEPT_THIRD_PARTY_SOFTWARE: "1"
+          NEMOCLAW_SANDBOX_NAME: "e2e-health-auth"
+          NEMOCLAW_RECREATE_SANDBOX: "1"
+          GITHUB_TOKEN: ${{ github.token }}
+        run: bash test/e2e/test-device-auth-health.sh
+
+      - name: Upload install log on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: device-auth-health-install-log
+          path: /tmp/nemoclaw-e2e-health-install.log
+          if-no-files-found: ignore
+
   # ── Launchable Install-Flow Smoke Test ─────────────────────────
   # Validates the community install path (brev-launchable-ci-cpu.sh) end-to-end.
   # The launchable script has ZERO Brev dependencies — it's a generic Ubuntu
@@ -1543,6 +1632,7 @@ jobs:
         docs-validation-e2e,
         messaging-providers-e2e,
         messaging-compatible-endpoint-e2e,
+        kimi-inference-compat-e2e,
         token-rotation-e2e,
         sandbox-survival-e2e,
         hermes-e2e,
@@ -1566,6 +1656,7 @@ jobs:
         credential-sanitization-e2e,
         telegram-injection-e2e,
         overlayfs-autofix-e2e,
+        device-auth-health-e2e,
         launchable-smoke-e2e,
         gpu-e2e,
         gpu-double-onboard-e2e,
@@ -1626,6 +1717,7 @@ jobs:
         docs-validation-e2e,
         messaging-providers-e2e,
         messaging-compatible-endpoint-e2e,
+        kimi-inference-compat-e2e,
         token-rotation-e2e,
         sandbox-survival-e2e,
         hermes-e2e,
@@ -1642,6 +1734,7 @@ jobs:
         rebuild-hermes-e2e,
         rebuild-hermes-stale-base-e2e,
         overlayfs-autofix-e2e,
+        device-auth-health-e2e,
         gpu-e2e,
       ]
     if: ${{ always() && github.event_name == 'workflow_dispatch' }}
@@ -1724,6 +1817,7 @@ jobs:
         docs-validation-e2e,
         messaging-providers-e2e,
         messaging-compatible-endpoint-e2e,
+        kimi-inference-compat-e2e,
         token-rotation-e2e,
         sandbox-survival-e2e,
         hermes-e2e,
@@ -1747,6 +1841,7 @@ jobs:
         credential-sanitization-e2e,
         telegram-injection-e2e,
         overlayfs-autofix-e2e,
+        device-auth-health-e2e,
         gpu-e2e,
         gpu-double-onboard-e2e,
       ]

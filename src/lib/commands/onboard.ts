@@ -3,7 +3,7 @@
 
 import { Command } from "@oclif/core";
 
-import { runOnboardAction } from "../global-cli-actions";
+import { runOnboardAction } from "../actions/global";
 import { runRemoteOnboard } from "../remote-onboard";
 import {
   buildOnboardFlags,

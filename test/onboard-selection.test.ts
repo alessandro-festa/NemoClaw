@@ -106,7 +106,7 @@ describe("onboard provider selection UX", () => {
     const onboardPath = JSON.stringify(path.join(repoRoot, "dist", "lib", "onboard.js"));
     const credentialsPath = JSON.stringify(path.join(repoRoot, "dist", "lib", "credentials.js"));
     const runnerPath = JSON.stringify(path.join(repoRoot, "dist", "lib", "runner.js"));
-    const registryPath = JSON.stringify(path.join(repoRoot, "dist", "lib", "registry.js"));
+    const registryPath = JSON.stringify(path.join(repoRoot, "dist", "lib", "state", "registry.js"));
 
     fs.mkdirSync(fakeBin, { recursive: true });
     fs.writeFileSync(
@@ -320,7 +320,7 @@ printf '%s' "$status"
 const credentials = require(${credentialsPath});
 const runner = require(${runnerPath});
 
-const answers = ["1", "6"];
+const answers = ["1", "7"];
 const messages = [];
 
 credentials.prompt = async (message) => {
@@ -421,7 +421,7 @@ printf '%s' "$status"
 const credentials = require(${credentialsPath});
 const runner = require(${runnerPath});
 
-const answers = ["1", "7", "custom/provider-model"];
+const answers = ["1", "8", "custom/provider-model"];
 const messages = [];
 
 credentials.prompt = async (message) => {
@@ -517,7 +517,7 @@ printf '%s' "$status"
 const credentials = require(${credentialsPath});
 const runner = require(${runnerPath});
 
-const answers = ["1", "7", "bad/model", "z-ai/glm-5.1"];
+const answers = ["1", "8", "bad/model", "z-ai/glm-5.1"];
 const messages = [];
 
 credentials.prompt = async (message) => {
@@ -3697,7 +3697,7 @@ const { setupNim } = require(${onboardPath});
     const onboardPath = JSON.stringify(path.join(repoRoot, "dist", "lib", "onboard.js"));
     const credentialsPath = JSON.stringify(path.join(repoRoot, "dist", "lib", "credentials.js"));
     const runnerPath = JSON.stringify(path.join(repoRoot, "dist", "lib", "runner.js"));
-    const registryPath = JSON.stringify(path.join(repoRoot, "dist", "lib", "registry.js"));
+    const registryPath = JSON.stringify(path.join(repoRoot, "dist", "lib", "state", "registry.js"));
     const platformPath = JSON.stringify(path.join(repoRoot, "dist", "lib", "platform.js"));
 
     // Fake curl binary that returns a successful response — needed because
@@ -3949,7 +3949,7 @@ const { setupNim } = require(${onboardPath});
     const onboardPath = JSON.stringify(path.join(repoRoot, "dist", "lib", "onboard.js"));
     const credentialsPath = JSON.stringify(path.join(repoRoot, "dist", "lib", "credentials.js"));
     const runnerPath = JSON.stringify(path.join(repoRoot, "dist", "lib", "runner.js"));
-    const registryPath = JSON.stringify(path.join(repoRoot, "dist", "lib", "registry.js"));
+    const registryPath = JSON.stringify(path.join(repoRoot, "dist", "lib", "state", "registry.js"));
     const platformPath = JSON.stringify(path.join(repoRoot, "dist", "lib", "platform.js"));
 
     fs.mkdirSync(fakeBin, { recursive: true });

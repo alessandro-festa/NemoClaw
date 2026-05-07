@@ -2,6 +2,9 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { isRemoteConfig } from "../src/lib/remote-config";
 
 // Hoist the SSRF mock at module level so it intercepts the dynamic import
@@ -241,5 +244,73 @@ describe("runRemoteOnboard", () => {
     expect(out).toContain("Onboarded against https://aif.example.com");
     expect(out).toContain("Blueprint: suse-ai-factory");
     expect(out).toContain("alpha");
+  });
+
+  // #59: a successful remote onboard must persist the credentials in the
+  // onboard session so a subsequent `nemoclaw onboard --resume` (with no
+  // flags) can hydrate process.env and continue in remote mode instead of
+  // falling back to the local interactive wizard.
+  it("#59: persists remote credentials in the onboard session on success", async () => {
+    // Redirect HOME so the session file lands in a tmp dir we own.
+    const originalHome = process.env.HOME;
+    const tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), "nemoclaw-remote-onboard-"));
+    process.env.HOME = tmpHome;
+
+    try {
+      // Re-import after HOME swap so onboard-session resolves SESSION_DIR
+      // against the temp HOME.
+      vi.resetModules();
+      ({ runRemoteOnboard } = await import("../src/lib/remote-onboard"));
+      const { loadSession, sessionPath } = await import("../src/lib/onboard-session");
+
+      mockValidateEndpointUrl.mockResolvedValue({
+        url: "https://aif.example.com",
+        pinnedUrl: "https://aif.example.com",
+      });
+      const remoteConfig = {
+        version: "1",
+        blueprintId: "suse-ai-factory",
+        blueprintVersion: "0.1.0",
+        isolationMode: "Shared",
+        inferenceEndpoint: "https://inference.example.com/v1",
+        inferenceProviderType: "nvidia",
+        inferenceModel: "meta/llama-3.1-8b-instruct",
+        gatewayEndpoint: "https://gateway.example.com",
+        sandboxImage: "nvcr.io/nvidia/nemoclaw/sandbox:latest",
+      };
+      let call = 0;
+      vi.stubGlobal(
+        "fetch",
+        vi.fn().mockImplementation(async () => {
+          call += 1;
+          return {
+            ok: true,
+            status: 200,
+            statusText: "OK",
+            json: async () => (call === 1 ? remoteConfig : { assistants: [] }),
+          };
+        }),
+      );
+
+      await runRemoteOnboard({
+        apiKey: "persisted-key",
+        serverUrl: "https://aif.example.com",
+      });
+
+      // Session file must exist under tmpHome and carry the credentials.
+      expect(sessionPath().startsWith(tmpHome)).toBe(true);
+      const session = loadSession();
+      expect(session?.remoteOnboard).toEqual({
+        apiKey: "persisted-key",
+        serverUrl: "https://aif.example.com",
+      });
+    } finally {
+      if (originalHome === undefined) {
+        delete process.env.HOME;
+      } else {
+        process.env.HOME = originalHome;
+      }
+      fs.rmSync(tmpHome, { recursive: true, force: true });
+    }
   });
 });

@@ -4,6 +4,7 @@
 import { Command } from "@oclif/core";
 
 import { runOnboardAction } from "../actions/global";
+import { loadSession } from "../onboard-session";
 import { runRemoteOnboard } from "../remote-onboard";
 import {
   buildOnboardFlags,
@@ -25,8 +26,22 @@ export default class OnboardCliCommand extends Command {
   public async run(): Promise<void> {
     // SUSE remote-mode opt-in: when both env vars are set, bypass the
     // interactive wizard and configure against the SUSE AI Factory operator.
-    const apiKey = process.env.NEMOCLAW_API_KEY;
-    const serverUrl = process.env.NEMOCLAW_SERVER_URL;
+    let apiKey = process.env.NEMOCLAW_API_KEY;
+    let serverUrl = process.env.NEMOCLAW_SERVER_URL;
+
+    // #59: hydrate remote credentials from the persisted session on
+    // `--resume` with no flags, so a previously-onboarded remote session
+    // doesn't fall back to the local interactive wizard. Only kicks in
+    // when the env vars are unset on this invocation; explicit flags or
+    // env always win.
+    if ((!apiKey || !serverUrl) && process.argv.includes("--resume")) {
+      const session = loadSession();
+      if (session?.remoteOnboard) {
+        apiKey = apiKey || session.remoteOnboard.apiKey;
+        serverUrl = serverUrl || session.remoteOnboard.serverUrl;
+      }
+    }
+
     if (apiKey && serverUrl) {
       await runRemoteOnboard({ apiKey, serverUrl });
       return;

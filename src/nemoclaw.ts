@@ -275,7 +275,7 @@ async function main(argv: string[] = process.argv.slice(2)): Promise<void> {
   ) {
     validateName(cmd, "sandbox name");
     await runDispatchResult(
-      resolveSandboxOclifDispatch(cmd, requestedSandboxAction, requestedSandboxActionArgs),
+      resolveLegacySandboxDispatch(cmd, requestedSandboxAction, requestedSandboxActionArgs),
       { sandboxName: cmd, actionArgs: requestedSandboxActionArgs },
     );
     return;

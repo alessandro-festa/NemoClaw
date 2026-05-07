@@ -258,6 +258,40 @@ describe("onboard session", () => {
     expect(fresh.telegramConfig).toBeNull();
   });
 
+  it("#59: persists remoteOnboard credentials across save/load roundtrips", () => {
+    const created = session.createSession();
+    created.remoteOnboard = {
+      apiKey: "test-api-key",
+      serverUrl: "https://aif.example.com",
+    };
+    session.saveSession(created);
+
+    const loaded = session.loadSession()!;
+    expect(loaded.remoteOnboard).toEqual({
+      apiKey: "test-api-key",
+      serverUrl: "https://aif.example.com",
+    });
+  });
+
+  it("#59: defaults remoteOnboard to null for fresh sessions", () => {
+    const fresh = session.createSession();
+    expect(fresh.remoteOnboard).toBeNull();
+  });
+
+  it("#59: rejects malformed remoteOnboard on load (missing fields)", () => {
+    // Hand-edited session with partial remoteOnboard data — the parser
+    // must reject anything missing apiKey or serverUrl rather than
+    // hydrating process.env with an empty string.
+    const seed = session.createSession();
+    session.saveSession(seed);
+    const onDisk = JSON.parse(fs.readFileSync(session.SESSION_FILE, "utf-8"));
+    onDisk.remoteOnboard = { apiKey: "k" }; // serverUrl missing
+    fs.writeFileSync(session.SESSION_FILE, JSON.stringify(onDisk));
+
+    const loaded = session.loadSession()!;
+    expect(loaded.remoteOnboard).toBeNull();
+  });
+
   it("persists and clears web search config through safe session updates", () => {
     session.saveSession(session.createSession());
     session.markStepComplete("provider_selection", {

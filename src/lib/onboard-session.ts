@@ -98,8 +98,21 @@ export interface Session {
   migratedLegacyValueHashes: Record<string, string> | null;
   gpuPassthrough: boolean;
   telegramConfig: TelegramConfig | null;
+  // remoteOnboard captures the SUSE AI Factory operator coordinates a
+  // remote-mode `nemoclaw onboard --api-key X --server-url Y` ran with,
+  // so a subsequent `nemoclaw onboard --resume` (with no flags) can
+  // hydrate process.env and continue in remote mode instead of falling
+  // back to the local interactive wizard. Null when the session was
+  // started in local mode. Stored alongside the session file in
+  // ~/.nemoclaw (dir 0o700, file 0o600) — same posture as ~/.ssh/.
+  remoteOnboard: RemoteOnboardSession | null;
   metadata: SessionMetadata;
   steps: Record<string, StepState>;
+}
+
+export interface RemoteOnboardSession {
+  apiKey: string;
+  serverUrl: string;
 }
 
 export interface TelegramConfig {
@@ -138,6 +151,7 @@ export interface SessionUpdates {
   migratedLegacyValueHashes?: Record<string, string>;
   gpuPassthrough?: boolean;
   telegramConfig?: TelegramConfig | null;
+  remoteOnboard?: RemoteOnboardSession | null;
   metadata?: { gatewayName?: string; fromDockerfile?: string | null };
 }
 
@@ -239,6 +253,16 @@ function parseTelegramConfig(value: unknown): TelegramConfig | null {
   return null;
 }
 
+function parseRemoteOnboardSession(
+  value: unknown,
+): RemoteOnboardSession | null {
+  if (!isObject(value)) return null;
+  const apiKey = readString(value.apiKey);
+  const serverUrl = readString(value.serverUrl);
+  if (!apiKey || !serverUrl) return null;
+  return { apiKey, serverUrl };
+}
+
 function parseSessionMetadata(value: SessionJsonValue | undefined): SessionMetadata | undefined {
   if (!isObject(value)) return undefined;
   return {
@@ -323,6 +347,7 @@ export function createSession(overrides: Partial<Session> = {}): Session {
       : null,
     gpuPassthrough: overrides.gpuPassthrough === true,
     telegramConfig: parseTelegramConfig(overrides.telegramConfig),
+    remoteOnboard: parseRemoteOnboardSession(overrides.remoteOnboard),
     metadata: {
       gatewayName: overrides.metadata?.gatewayName ?? "nemoclaw",
       fromDockerfile: overrides.metadata?.fromDockerfile ?? null,
@@ -359,6 +384,7 @@ export function normalizeSession(data: Session | SessionJsonValue | undefined): 
     migratedLegacyValueHashes: readStringRecord(data.migratedLegacyValueHashes),
     gpuPassthrough: data.gpuPassthrough === true,
     telegramConfig: parseTelegramConfig(data.telegramConfig),
+    remoteOnboard: parseRemoteOnboardSession(data.remoteOnboard),
     lastStepStarted: readString(data.lastStepStarted),
     lastCompletedStep: readString(data.lastCompletedStep),
     failure: sanitizeFailure(isObject(data.failure) ? data.failure : null),

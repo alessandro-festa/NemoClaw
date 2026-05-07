@@ -3,6 +3,7 @@
 
 import { fetchRemoteConfig } from "./remote-config-fetch";
 import { listRemoteAssistants } from "./remote-assistants";
+import { loadSession, saveSession, createSession } from "./onboard-session";
 
 /**
  * Remote-mode onboarding for `nemoclaw onboard --api-key X --server-url Y`.
@@ -13,9 +14,12 @@ import { listRemoteAssistants } from "./remote-assistants";
  * to configure the assistant — it only validates credentials, fetches the
  * RemoteConfig, and lists the sandboxes the user can connect to.
  *
- * No kubectl on the user's laptop. No state written to local disk — every
- * subsequent command (`list`, `<name> connect`, `<name> disconnect`) takes
- * the same `--api-key` / `--server-url` flags.
+ * No kubectl on the user's laptop. The credentials are persisted to the
+ * onboard session (~/.nemoclaw/onboard-session.json, dir 0o700, file 0o600
+ * — same posture as ~/.ssh/) so a subsequent `nemoclaw onboard --resume`
+ * with no flags can hydrate process.env and continue in remote mode (#59).
+ * Other commands (`list`, `<name> connect`, `<name> disconnect`) still
+ * take the same `--api-key` / `--server-url` flags / env vars explicitly.
  */
 export async function runRemoteOnboard(opts: {
   apiKey: string;
@@ -23,6 +27,18 @@ export async function runRemoteOnboard(opts: {
 }): Promise<void> {
   const config = await fetchRemoteConfig(opts.serverUrl, opts.apiKey);
   const assistants = await listRemoteAssistants(opts.serverUrl, opts.apiKey);
+
+  // Persist remote credentials to the session so --resume can pick them
+  // back up. Done after the network calls succeed so a failed onboard
+  // doesn't seed a session pointing at unreachable coordinates.
+  const existing = loadSession();
+  const next = existing
+    ? { ...existing, remoteOnboard: { apiKey: opts.apiKey, serverUrl: opts.serverUrl } }
+    : createSession({
+        mode: "remote",
+        remoteOnboard: { apiKey: opts.apiKey, serverUrl: opts.serverUrl },
+      });
+  saveSession(next);
 
   console.log("");
   console.log(`  ✓ Onboarded against ${opts.serverUrl}`);

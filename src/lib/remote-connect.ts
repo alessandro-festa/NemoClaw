@@ -39,6 +39,13 @@ export interface ConnectIntentResponse {
   connectPath: string;
   hostKeyFingerprint?: string;
   expiresAtMs?: number;
+  /**
+   * Per-sandbox OpenClaw Web UI URL with the token already substituted.
+   * Optional — operator omits when token isn't published yet (sandbox
+   * hasn't run `openclaw onboard` yet, or webui-token-publisher sidecar
+   * still polling). claude#87.
+   */
+  webUIUrl?: string;
 }
 
 function isConnectIntentResponse(obj: unknown): obj is ConnectIntentResponse {
@@ -436,6 +443,13 @@ export async function connectToRemoteSandbox(opts: {
   sandboxName?: string;
 }): Promise<number> {
   const ticket = await fetchConnectIntent(opts.serverUrl, opts.apiKey, opts.sandboxName);
+  // Print the OpenClaw Web UI URL when the operator has substituted the
+  // real token (claude#87, aif-nc PR-C). Operator omits this field when the
+  // sandbox hasn't onboarded yet; in that case nothing prints. Goes to
+  // stderr so it doesn't pollute stdout if the user pipes the SSH session.
+  if (ticket.webUIUrl) {
+    process.stderr.write(`Web UI: ${ticket.webUIUrl}\n`);
+  }
   const socket = await openConnectTunnel(ticket);
   return runInteractiveShell(socket);
 }

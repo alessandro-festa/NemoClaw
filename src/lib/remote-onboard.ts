@@ -61,4 +61,15 @@ export async function runRemoteOnboard(opts: {
   console.log(
     "  Connect with: nemoclaw <name> connect --api-key=… --server-url=…",
   );
+
+  // Print the OpenClaw Web UI URL when the operator has substituted the
+  // real token (claude#87, aif-nc PR-C). The operator omits this field
+  // when the token isn't published yet (sandbox not started or
+  // webui-token-publisher sidecar still polling), so we only see this
+  // line when clicking the URL will actually work — no broken links.
+  if (config.webUIUrl) {
+    console.log("");
+    console.log("  Web UI:");
+    console.log(`    ${config.webUIUrl}`);
+  }
 }

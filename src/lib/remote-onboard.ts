@@ -3,7 +3,7 @@
 
 import { fetchRemoteConfig } from "./remote-config-fetch";
 import { listRemoteAssistants } from "./remote-assistants";
-import { loadSession, saveSession, createSession } from "./onboard-session";
+import { loadSession, saveSession, createSession } from "./state/onboard-session";
 
 /**
  * Remote-mode onboarding for `nemoclaw onboard --api-key X --server-url Y`.

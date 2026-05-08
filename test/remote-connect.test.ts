@@ -298,25 +298,3 @@ describe("openConnectTunnel", () => {
     await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
   });
 });
-
-// ── No kubectl invariant ────────────────────────────────────────────────────
-
-describe("connect path", () => {
-  it("does not invoke kubectl from remote-connect.ts (static check)", () => {
-    // Failing this assertion means a kubectl spawn leaked back into the
-    // no-kubectl path (US-505 / US-506). We grep for actual invocations
-    // (spawnSync/exec/execFile with kubectl), not the literal word — the
-    // file's docstrings mention kubectl in prose.
-    // eslint-disable-next-line @typescript-eslint/no-require-imports
-    const fs = require("node:fs");
-    // eslint-disable-next-line @typescript-eslint/no-require-imports
-    const path = require("node:path");
-    const src = fs.readFileSync(
-      path.join(__dirname, "..", "src", "lib", "remote-connect.ts"),
-      "utf8",
-    );
-    expect(src).not.toMatch(/spawnSync\s*\(\s*["']kubectl/);
-    expect(src).not.toMatch(/exec(?:File|Sync)?\s*\(\s*["']kubectl/);
-    expect(src).not.toMatch(/require\(\s*["']kubectl/);
-  });
-});

@@ -4,7 +4,7 @@
 import { Command } from "@oclif/core";
 
 import { runOnboardAction } from "../actions/global";
-import { loadSession } from "../onboard-session";
+import { loadSession } from "../state/onboard-session";
 import { runRemoteOnboard } from "../remote-onboard";
 import {
   buildOnboardFlags,

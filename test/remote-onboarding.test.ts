@@ -261,7 +261,7 @@ describe("runRemoteOnboard", () => {
       // against the temp HOME.
       vi.resetModules();
       ({ runRemoteOnboard } = await import("../src/lib/remote-onboard"));
-      const { loadSession, sessionPath } = await import("../src/lib/onboard-session");
+      const { loadSession, sessionPath } = await import("../src/lib/state/onboard-session");
 
       mockValidateEndpointUrl.mockResolvedValue({
         url: "https://aif.example.com",

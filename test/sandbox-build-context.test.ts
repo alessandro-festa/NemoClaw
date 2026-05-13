@@ -10,7 +10,7 @@ import {
   collectBuildContextStats,
   stageLegacySandboxBuildContext,
   stageOptimizedSandboxBuildContext,
-} from "../dist/lib/sandbox-build-context";
+} from "../dist/lib/sandbox/build-context";
 
 describe("sandbox build context staging", () => {
   it("optimized staging excludes blueprint .venv and extra scripts while preserving required files", () => {
@@ -27,7 +27,7 @@ describe("sandbox build context staging", () => {
         ),
       ).toBe(true);
       expect(
-        fs.existsSync(path.join(buildCtx, "nemoclaw-blueprint", "scripts", "ws-proxy-fix.js")),
+        fs.existsSync(path.join(buildCtx, "nemoclaw-blueprint", "scripts", "http-proxy-fix.js")),
       ).toBe(true);
       expect(
         fs.existsSync(

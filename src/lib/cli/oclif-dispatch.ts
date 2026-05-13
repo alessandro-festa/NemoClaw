@@ -117,6 +117,19 @@ export function resolveGlobalOclifDispatch(cmd: string, args: string[]): Dispatc
     return { kind: "usageError", lines: ["tunnel <start|stop>"] };
   }
 
+  if (cmd === "inference") {
+    const sub = args[0];
+    if (sub === "get") return oclif("inference:get", args.slice(1));
+    if (sub === "set") return oclif("inference:set", args.slice(1));
+    return {
+      kind: "usageError",
+      lines: [
+        "inference get [--json]",
+        "inference set --provider <provider> --model <model> [--sandbox <name>] [--no-verify]",
+      ],
+    };
+  }
+
   if (cmd === "credentials") {
     const sub = args[0];
     if (!sub || sub === "help" || sub === "--help" || sub === "-h") return oclif("credentials", []);

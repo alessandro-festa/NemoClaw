@@ -143,8 +143,8 @@ describe("agents/hermes/generate-config.ts", () => {
     expect(config.platforms.discord).toBeUndefined();
     expect(JSON.stringify(config)).not.toContain("DISCORD_BOT_TOKEN");
     expect(envFile).toContain("DISCORD_BOT_TOKEN=openshell:resolve:env:DISCORD_BOT_TOKEN\n");
-    expect(envFile).toContain("DISCORD_PROXY=http://127.0.0.1:3129\n");
-    expect(envFile).toContain("NEMOCLAW_DISCORD_FACADE_URL=http://127.0.0.1:3130\n");
+    expect(envFile).not.toContain("DISCORD_PROXY=");
+    expect(envFile).not.toContain("NEMOCLAW_DISCORD_FACADE_URL");
     expect(envFile).toContain("NEMOCLAW_DISCORD_GUILD_IDS=1491590992753590594\n");
     expect(envFile).toContain("DISCORD_ALLOWED_USERS=1005536447329222676\n");
   });
@@ -167,6 +167,7 @@ describe("agents/hermes/generate-config.ts", () => {
       NEMOCLAW_MESSAGING_CHANNELS_B64: encodeJson(["telegram", "slack"]),
       NEMOCLAW_MESSAGING_ALLOWED_IDS_B64: encodeJson({
         telegram: ["123456789"],
+        slack: ["U0123456789", "U09ABCDEFGH"],
       }),
       NEMOCLAW_TELEGRAM_CONFIG_B64: encodeJson({ requireMention: true }),
     });
@@ -184,6 +185,7 @@ describe("agents/hermes/generate-config.ts", () => {
     );
     expect(envFile).not.toContain("SLACK_BOT_TOKEN=openshell:resolve:env:SLACK_BOT_TOKEN\n");
     expect(envFile).not.toContain("SLACK_APP_TOKEN=openshell:resolve:env:SLACK_APP_TOKEN\n");
+    expect(envFile).toContain("SLACK_ALLOWED_USERS=U0123456789,U09ABCDEFGH\n");
   });
 
   it("omits Telegram behavior config when requireMention is not boolean", () => {

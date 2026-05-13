@@ -33,6 +33,23 @@ $ curl -fsSL https://www.nvidia.com/nemoclaw.sh | NEMOCLAW_NON_INTERACTIVE=1 NEM
 If you use nvm or fnm to manage Node.js, the installer might not update your current shell's PATH.
 If `nemoclaw` is not found after install, run `source ~/.bashrc` (or `source ~/.zshrc` for zsh) or open a new terminal.
 
+On Linux, the installer checks Docker before it installs NemoClaw.
+If Docker is missing, the installer downloads the official Docker convenience script, asks for `sudo`, installs Docker, and starts the Docker service when systemd is available.
+If Docker is installed but your current shell cannot use the Docker socket yet, the installer adds your user to the `docker` group when needed and exits with a recovery command.
+
+```console
+$ newgrp docker
+$ curl -fsSL https://www.nvidia.com/nemoclaw.sh | bash
+```
+
+On DGX Spark and DGX Station, an interactive installer can offer express install after you accept the third-party software notice.
+Express install switches onboarding to non-interactive mode, applies the suggested security policy, and selects the managed local inference path for that platform.
+Set `NEMOCLAW_NO_EXPRESS=1` to skip the express prompt, or set `NEMOCLAW_PROVIDER` before launching the installer when you want to choose a provider yourself.
+
+The installer auto-launches `nemoclaw onboard` when it can locate the freshly-installed binary.
+If it cannot locate the binary, or if blocking host preflight checks fail, it does not launch the wizard automatically.
+In that case, the installer prints the relevant diagnostics and a `To finish setup, run:` block with the explicit `nemoclaw onboard` command.
+
 > **Note:** The onboard flow builds the sandbox image with `NEMOCLAW_DISABLE_DEVICE_AUTH=1` so the dashboard is immediately usable during setup.
 > This is a build-time setting baked into the sandbox image, not a runtime knob.
 > If you export `NEMOCLAW_DISABLE_DEVICE_AUTH` after onboarding finishes, it has no effect on an existing sandbox.
@@ -255,7 +272,7 @@ For example, Slack bot tokens must start with `xoxb-`.
 ### Choose Network Policy Presets
 
 After the sandbox image builds and OpenClaw starts inside the sandbox, NemoClaw asks which network policy tier to apply.
-The default **Balanced** tier includes common development presets such as npm, PyPI, Hugging Face, Homebrew, and Brave Search.
+The default **Balanced** tier includes common development presets such as npm, PyPI, Hugging Face, Homebrew, and Brave Search when the selected agent supports web search.
 Use the arrow keys or `j` and `k` to move, Space to select, and Enter to confirm.
 
 The preset selector lets you include more destinations, such as GitHub, Jira, Slack, Telegram, or local inference.
@@ -329,9 +346,4 @@ openclaw agent --agent main --local -m "hello" --session-id test
 
 ## Related Skills
 
-- `nemoclaw-user-manage-sandboxes` — Manage NemoClaw sandboxes (use the `nemoclaw-user-manage-sandboxes` skill) for port forwards, rebuilds, upgrades, and uninstall
-- `nemoclaw-user-configure-inference` — Switch inference providers (use the `nemoclaw-user-configure-inference` skill) to use a different model or endpoint
-- `nemoclaw-user-manage-policy` — Approve or deny network requests (use the `nemoclaw-user-manage-policy` skill) when the agent tries to reach external hosts
-- `nemoclaw-user-deploy-remote` — Deploy to a remote GPU instance (use the `nemoclaw-user-deploy-remote` skill) for always-on operation
-- `nemoclaw-user-monitor-sandbox` — Monitor sandbox activity (use the `nemoclaw-user-monitor-sandbox` skill) through the OpenShell TUI
-- `nemoclaw-user-reference` — Consult the troubleshooting guide (use the `nemoclaw-user-reference` skill) for common error messages and resolution steps
+- `nemoclaw-user-overview` — NemoClaw Overview (use the `nemoclaw-user-overview` skill) to learn what NemoClaw is and its capabilities

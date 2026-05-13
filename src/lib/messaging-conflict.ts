@@ -14,7 +14,7 @@
 // the live OpenShell gateway for known provider names.
 
 import type { SandboxEntry } from "./state/registry";
-import { getChannelDef, getChannelTokenKeys } from "./sandbox-channels";
+import { getChannelDef, getChannelTokenKeys } from "./sandbox/channels";
 
 type ProbeResult = "present" | "absent" | "error";
 type ConflictReason = "matching-token" | "unknown-token";
@@ -70,7 +70,13 @@ function getTokenKeys(channel: string): string[] {
 }
 
 function hasStoredChannel(entry: SandboxEntry, channel: string): boolean {
-  return Array.isArray(entry.messagingChannels) && entry.messagingChannels.includes(channel);
+  if (!Array.isArray(entry.messagingChannels) || !entry.messagingChannels.includes(channel)) {
+    return false;
+  }
+  // A `channels stop` sandbox keeps the channel in messagingChannels so a later
+  // `channels start` can recover, but its bridge is paused — the credential is
+  // not in use, so it must not block another sandbox from claiming the token.
+  return !(Array.isArray(entry.disabledChannels) && entry.disabledChannels.includes(channel));
 }
 
 function conflictReasonForRequest(
@@ -198,7 +204,11 @@ export function findAllOverlaps(registry: ConflictRegistry): Array<{
   const byChannel = new Map<string, SandboxEntry[]>();
   for (const entry of sandboxes) {
     if (!Array.isArray(entry.messagingChannels)) continue;
+    const disabled = new Set(
+      Array.isArray(entry.disabledChannels) ? entry.disabledChannels : [],
+    );
     for (const channel of entry.messagingChannels) {
+      if (disabled.has(channel)) continue;
       const list = byChannel.get(channel) || [];
       list.push(entry);
       byChannel.set(channel, list);

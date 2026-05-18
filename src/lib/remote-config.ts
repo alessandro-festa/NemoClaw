@@ -13,7 +13,7 @@ export interface RemoteConfig {
   isolationMode: "Shared" | "Isolated" | "Hybrid";
   /** Full URL to the inference endpoint. */
   inferenceEndpoint: string;
-  inferenceProviderType: "nvidia" | "openai";
+  inferenceProviderType: "nvidia" | "openai" | "ollama";
   inferenceModel: string;
   /** Full URL to the OpenShell gateway endpoint. */
   gatewayEndpoint: string;
@@ -43,7 +43,9 @@ export function isRemoteConfig(obj: unknown): obj is RemoteConfig {
       r.isolationMode === "Isolated" ||
       r.isolationMode === "Hybrid") &&
     typeof r.inferenceEndpoint === "string" &&
-    (r.inferenceProviderType === "nvidia" || r.inferenceProviderType === "openai") &&
+    (r.inferenceProviderType === "nvidia" ||
+      r.inferenceProviderType === "openai" ||
+      r.inferenceProviderType === "ollama") &&
     typeof r.inferenceModel === "string" &&
     typeof r.gatewayEndpoint === "string" &&
     typeof r.sandboxImage === "string" &&

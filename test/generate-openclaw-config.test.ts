@@ -226,6 +226,44 @@ describe("generate-openclaw-config.py: config generation", () => {
     expect(config.channels.telegram.groups).toBeUndefined();
   });
 
+  it("does not write channels.openclaw-weixin from generate-openclaw-config (Dockerfile seed runs separately)", () => {
+    // Commit a21e123 reverted the chained seed: generate-openclaw-config.py
+    // intentionally leaves channels.openclaw-weixin unset, even when a
+    // wechatConfig is provided. The Dockerfile invokes
+    // seed-wechat-accounts.py separately, AFTER `openclaw plugins install`
+    // registers the openclaw-weixin channel id. Writing the channel block
+    // here would trigger "unknown channel id: openclaw-weixin" on install.
+    const channels = Buffer.from(JSON.stringify(["wechat"])).toString("base64");
+    const wechatConfig = Buffer.from(
+      JSON.stringify({ accountId: "primary", baseUrl: "https://example", userId: "u1" }),
+    ).toString("base64");
+    const config = runConfigScript({
+      NEMOCLAW_MESSAGING_CHANNELS_B64: channels,
+      NEMOCLAW_WECHAT_CONFIG_B64: wechatConfig,
+    });
+    expect(config.channels?.["openclaw-weixin"]).toBeUndefined();
+    // The "wechat" alias is the NemoClaw channel name, not an OpenClaw
+    // channel id — must never appear under channels.
+    expect(config.channels?.wechat).toBeUndefined();
+  });
+
+  it("omits channels.openclaw-weixin when no accountId was captured", () => {
+    // No QR-login result → seed step bails on the empty accountId and
+    // leaves openclaw.json untouched, so the bridge stays dormant.
+    const channels = Buffer.from(JSON.stringify(["wechat"])).toString("base64");
+    const config = runConfigScript({ NEMOCLAW_MESSAGING_CHANNELS_B64: channels });
+    expect(config.channels?.["openclaw-weixin"]).toBeUndefined();
+    expect(config.channels?.wechat).toBeUndefined();
+  });
+
+  it("enables the openclaw-weixin plugin entry unconditionally", () => {
+    // The plugin ships in the base image, so we activate the entry on every
+    // build. With no seeded account, the upstream auth/accounts.ts no-ops
+    // and the bridge never starts.
+    const config = runConfigScript({});
+    expect(config.plugins?.entries?.["openclaw-weixin"]?.enabled).toBe(true);
+  });
+
   it("emits canonical openshell:resolve:env: placeholders for non-Slack channels", () => {
     const channels = Buffer.from(JSON.stringify(["telegram", "discord"])).toString("base64");
     const config = runConfigScript({ NEMOCLAW_MESSAGING_CHANNELS_B64: channels });
@@ -374,6 +412,70 @@ describe("generate-openclaw-config.py: config generation", () => {
       maxTokensField: "max_tokens",
       requiresToolResultName: true,
     });
+  });
+
+  // #2747: Ollama's OpenAI-compatible streaming API omits the usage chunk
+  // unless `stream_options.include_usage` is set on the request. OpenClaw
+  // gates that on `model.compat.supportsUsageInStreaming`. NemoClaw routes
+  // ollama-local through the standardised `inference.local` URL, which
+  // OpenClaw's own Ollama detector does not recognise — so we force the
+  // flag here. Cloud providers and other local backends must not be
+  // affected.
+  it("enables supportsUsageInStreaming for Ollama provider keys (#2747)", () => {
+    for (const providerKey of ["ollama", "ollama-local"]) {
+      const config = runConfigScript({
+        NEMOCLAW_MODEL: "qwen2.5:7b",
+        NEMOCLAW_PROVIDER_KEY: providerKey,
+        NEMOCLAW_PRIMARY_MODEL_REF: "qwen2.5:7b",
+        NEMOCLAW_INFERENCE_BASE_URL: "https://inference.local/v1",
+        NEMOCLAW_INFERENCE_API: "openai-completions",
+      });
+      const model = config.models.providers[providerKey].models[0];
+      expect(model.compat?.supportsUsageInStreaming).toBe(true);
+    }
+  });
+
+  it("does not enable supportsUsageInStreaming for non-Ollama providers (#2747)", () => {
+    const cases = [
+      { NEMOCLAW_PROVIDER_KEY: "openai", NEMOCLAW_INFERENCE_BASE_URL: "https://api.openai.com/v1" },
+      {
+        NEMOCLAW_PROVIDER_KEY: "anthropic",
+        NEMOCLAW_INFERENCE_BASE_URL: "https://api.anthropic.com",
+      },
+      { NEMOCLAW_PROVIDER_KEY: "vllm", NEMOCLAW_INFERENCE_BASE_URL: "https://inference.local/v1" },
+      {
+        NEMOCLAW_PROVIDER_KEY: "nim-local",
+        NEMOCLAW_INFERENCE_BASE_URL: "https://inference.local/v1",
+      },
+    ];
+
+    for (const envCase of cases) {
+      const config = runConfigScript({
+        NEMOCLAW_MODEL: "test-model",
+        NEMOCLAW_PRIMARY_MODEL_REF: "test-ref",
+        NEMOCLAW_INFERENCE_API: "openai-completions",
+        ...envCase,
+      });
+      const model = config.models.providers[envCase.NEMOCLAW_PROVIDER_KEY].models[0];
+      expect(model.compat?.supportsUsageInStreaming).toBeUndefined();
+    }
+  });
+
+  // If a future model-specific-setup manifest declares
+  // supportsUsageInStreaming explicitly, that decision should win over our
+  // ollama-keyed default — including when a manifest opts the flag *off*.
+  it("respects existing supportsUsageInStreaming from inference compat (#2747)", () => {
+    const config = runConfigScript({
+      NEMOCLAW_MODEL: "qwen2.5:7b",
+      NEMOCLAW_PROVIDER_KEY: "ollama",
+      NEMOCLAW_PRIMARY_MODEL_REF: "qwen2.5:7b",
+      NEMOCLAW_INFERENCE_BASE_URL: "https://inference.local/v1",
+      NEMOCLAW_INFERENCE_API: "openai-completions",
+      NEMOCLAW_INFERENCE_COMPAT_B64: Buffer.from(
+        JSON.stringify({ supportsUsageInStreaming: false }),
+      ).toString("base64"),
+    });
+    expect(config.models.providers.ollama.models[0].compat.supportsUsageInStreaming).toBe(false);
   });
 
   it("does not activate the OpenClaw Kimi setup for non-matching routes", () => {

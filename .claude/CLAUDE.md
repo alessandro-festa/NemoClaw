@@ -1,0 +1,1 @@
+Read @/Users/alessandrofesta/Documents/dev/CLAUDE.md for general rule of behavior

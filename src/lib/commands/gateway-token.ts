@@ -1,7 +1,8 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-import { Args, Command, Flags } from "@oclif/core";
+import { Args, Flags } from "@oclif/core";
+import { NemoClawCommand } from "../cli/nemoclaw-oclif-command";
 
 import { runGatewayTokenCommand } from "../gateway-token-command";
 
@@ -10,7 +11,6 @@ type GatewayTokenRuntimeBridge = {
   getSandboxAgent: (sandboxName: string) => string | null;
 };
 
-/* v8 ignore next -- source tests inject this bridge; CLI subprocess tests cover the real onboard module. */
 let runtimeBridgeFactory = (): GatewayTokenRuntimeBridge => {
   const onboard = require("../onboard") as Pick<
     GatewayTokenRuntimeBridge,
@@ -41,7 +41,7 @@ function getRuntimeBridge(): GatewayTokenRuntimeBridge {
   return runtimeBridgeFactory();
 }
 
-export default class GatewayTokenCliCommand extends Command {
+export default class GatewayTokenCliCommand extends NemoClawCommand {
   static id = "sandbox:gateway:token";
   static strict = true;
   static summary = "Print the OpenClaw gateway auth token to stdout";
@@ -59,7 +59,6 @@ export default class GatewayTokenCliCommand extends Command {
     }),
   };
   static flags = {
-    help: Flags.help({ char: "h" }),
     quiet: Flags.boolean({ char: "q", description: "Suppress the stderr security warning" }),
   };
 
@@ -67,8 +66,12 @@ export default class GatewayTokenCliCommand extends Command {
     const { args, flags } = await this.parse(GatewayTokenCliCommand);
     // Suppress EPIPE traces when the consumer closes the pipe early
     // (e.g. `... | head -c 0`). The token has already been written.
-    process.stdout.on("error", /* v8 ignore next -- pipe-close behavior is covered by CLI usage. */ (err: NodeJS.ErrnoException) => {
-      if (err.code === "EPIPE") process.exit(0);
+    process.stdout.once("error", (err: NodeJS.ErrnoException) => {
+      if (err.code === "EPIPE") {
+        this.setExitCode(0);
+        return;
+      }
+      throw err;
     });
 
     const runtime = getRuntimeBridge();
@@ -80,12 +83,10 @@ export default class GatewayTokenCliCommand extends Command {
         getSandboxAgent: runtime.getSandboxAgent,
       },
     );
-    // NCQ #3180: avoid this.exit(code), which throws @oclif/core ExitError.
-    // The legacy `nemoclaw <name> gateway-token` dispatch did not catch the
-    // throw, leaking a raw JS stack trace to the user. Always assigning
-    // process.exitCode keeps the diagnostic output clean and prevents a
-    // stale non-zero code from a prior run() in the same process from
-    // bleeding through on a successful invocation.
-    process.exitCode = exitCode;
+    // NCQ #3180: avoid throwing ExitError. The legacy
+    // `nemoclaw <name> gateway-token` dispatch historically leaked raw JS
+    // stacks for thrown exits; the shared helper records the status without
+    // throwing and clears stale non-zero codes on success.
+    this.setExitCode(exitCode);
   }
 }

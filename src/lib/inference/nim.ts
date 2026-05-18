@@ -9,6 +9,7 @@ const {
   dockerContainerInspectFormat,
   dockerForceRm,
   dockerLoginPasswordStdin,
+  dockerLogs,
   dockerPort,
   dockerPull,
   dockerRm,
@@ -20,7 +21,7 @@ const nimImages = require("../../../bin/lib/nim-images.json");
 
 import { VLLM_PORT } from "../core/ports";
 
-const UNIFIED_MEMORY_GPU_TAGS = ["GB10", "Thor", "Orin", "Xavier"];
+const UNIFIED_MEMORY_GPU_TAGS = ["GB10", "Thor", "Orin", "Xavier", "Jetson", "Tegra"];
 const NIM_STATUS_PROBE_TIMEOUT_MS = 5000;
 
 export interface NimModel {
@@ -29,11 +30,26 @@ export interface NimModel {
   minGpuMemoryMB: number;
 }
 
-export type NvidiaPlatform = "spark" | "station" | "linux";
+export type NvidiaPlatform = "spark" | "station" | "jetson" | "linux";
+
+export interface NimGpu {
+  name: string;
+  memoryMB: number;
+}
+
+export interface GpuGroup {
+  name: string;
+  count: number;
+  memoryMB: number;
+}
 
 export interface GpuDetection {
   type: string;
   name?: string;
+  // Per-GPU breakdown when available (primary nvidia-smi --query-gpu path).
+  // Always populated alongside `name` for NVIDIA; absent on the count-only
+  // fallback when every parsed row had a blank name. See #2669.
+  gpus?: NimGpu[];
   count: number;
   totalMemoryMB: number;
   perGpuMB: number;
@@ -42,6 +58,65 @@ export interface GpuDetection {
   unifiedMemory?: boolean;
   spark?: boolean;
   platform?: NvidiaPlatform;
+}
+
+// Group GPUs by their nvidia-smi model name, preserving first-appearance order.
+// Names are whitespace-normalized; rows with blank names are dropped (the caller
+// falls through to the count-only display in that case). We deliberately do not
+// include memoryMB in the group key — within a single host, nvidia-smi reports
+// stable name strings that already disambiguate memory variants (e.g.
+// "H100 80GB HBM3" vs "H100 40GB"). The only theoretical collision is ECC-mode
+// reporting variance on otherwise-identical cards, which is rare enough that
+// splitting the group would create more confusion than it solves.
+export function groupGpusByName(gpus: readonly NimGpu[]): GpuGroup[] {
+  const groups: GpuGroup[] = [];
+  for (const g of gpus) {
+    const name = g.name.replace(/\s+/g, " ").trim();
+    if (!name) continue;
+    const existing = groups.find((grp) => grp.name === name);
+    if (existing) {
+      existing.count += 1;
+      existing.memoryMB += g.memoryMB;
+    } else {
+      groups.push({ name, count: 1, memoryMB: g.memoryMB });
+    }
+  }
+  return groups;
+}
+
+// Render the preflight summary for an NVIDIA GPU detection. Returns one
+// or more lines that the caller prefixes with `  ✓ ` /  prints directly.
+//
+//   - Homogeneous (1 GPU or N of the same model) → single compact line:
+//       NVIDIA GPU detected (<model>, <vram> MB)
+//       NVIDIA GPU detected (Nx <model>, <vram> MB)
+//   - Mixed model → aggregate header + indented per-group breakdown:
+//       NVIDIA GPU detected: 2 GPUs, 354590 MB VRAM
+//           - NVIDIA RTX PRO 6000 Blackwell Max-Q (97887 MB)
+//           - NVIDIA GB300 (256703 MB)
+//     Within one breakdown block, `Nx ` is added to every group when any
+//     group has count > 1 (preserves column alignment); otherwise dropped.
+//   - No usable names → last-resort count-only fallback.
+//
+// See #2669 for the multi-GPU case the previous fix missed.
+export function formatNvidiaGpuPreflightLines(gpu: GpuDetection): string[] {
+  if (gpu.name) {
+    const detail = gpu.count > 1 ? `${gpu.count}x ${gpu.name}` : gpu.name;
+    return [`NVIDIA GPU detected (${detail}, ${gpu.totalMemoryMB} MB)`];
+  }
+  if (gpu.gpus && gpu.gpus.length > 0) {
+    const groups = groupGpusByName(gpu.gpus);
+    if (groups.length > 0) {
+      const lines = [`NVIDIA GPU detected: ${gpu.count} GPUs, ${gpu.totalMemoryMB} MB VRAM`];
+      const anyDuplicate = groups.some((grp) => grp.count > 1);
+      for (const grp of groups) {
+        const prefix = anyDuplicate ? `${grp.count}x ` : "";
+        lines.push(`    - ${prefix}${grp.name} (${grp.memoryMB} MB)`);
+      }
+      return lines;
+    }
+  }
+  return [`NVIDIA GPU detected: ${gpu.count} GPU(s), ${gpu.totalMemoryMB} MB VRAM`];
 }
 
 // Read the platform model name from firmware. Try DMI first (covers Spark
@@ -65,6 +140,53 @@ function readPlatformModel(): string {
   return "";
 }
 
+function readHostMemoryMB(): number {
+  try {
+    const freeOut = runCapture(["free", "-m"], { ignoreError: true });
+    if (freeOut) {
+      const memLine = freeOut.split("\n").find((l: string) => l.includes("Mem:"));
+      if (memLine) {
+        const parts = memLine.split(/\s+/);
+        return parseInt(parts[1], 10) || 0;
+      }
+    }
+  } catch {
+    /* ignored */
+  }
+  return 0;
+}
+
+function hostPathExists(path: string): boolean {
+  try {
+    return fs.existsSync(path);
+  } catch {
+    return false;
+  }
+}
+
+function hasTegraDeviceNodeSignal(): boolean {
+  return [
+    "/dev/nvhost-gpu",
+    "/dev/nvhost-ctrl-gpu",
+    "/dev/nvhost-ctrl",
+    "/dev/nvmap",
+  ].some(hostPathExists);
+}
+
+function detectTegraHostGpu(): { name: string; platform: NvidiaPlatform } | null {
+  const model = readPlatformModel();
+  const modelLooksTegra = /Jetson|Tegra|Thor|Orin|Xavier/i.test(model);
+  if (!modelLooksTegra && !hasTegraDeviceNodeSignal()) return null;
+
+  let name = model.replace(/^NVIDIA\s+/i, "").trim();
+  if (!name) name = "Jetson/Tegra";
+  if (!/^NVIDIA\b/i.test(name)) name = `NVIDIA ${name}`;
+  if (!/Jetson|Tegra|Thor|Orin|Xavier/i.test(name)) {
+    name = "NVIDIA Jetson/Tegra GPU";
+  }
+  return { name, platform: "jetson" };
+}
+
 export function detectNvidiaPlatform(): NvidiaPlatform {
   const model = readPlatformModel();
   if (/DGX[_\s-]+Spark/i.test(model)) return "spark";
@@ -74,6 +196,9 @@ export function detectNvidiaPlatform(): NvidiaPlatform {
     (/Station/i.test(model) && /GB300/i.test(model))
   ) {
     return "station";
+  }
+  if (/Jetson|Tegra|Thor|Orin|Xavier/i.test(model) || hasTegraDeviceNodeSignal()) {
+    return "jetson";
   }
   return "linux";
 }
@@ -165,6 +290,7 @@ export function detectGpu(): GpuDetection | null {
         return {
           type: "nvidia",
           ...(allSameName ? { name: firstName } : {}),
+          gpus: parsed.map((p) => ({ name: p.name, memoryMB: p.memoryMB })),
           count: parsed.length,
           totalMemoryMB,
           perGpuMB: parsed[0].memoryMB,
@@ -188,38 +314,47 @@ export function detectGpu(): GpuDetection | null {
       .split("\n")
       .map((line: string) => line.trim())
       .filter(Boolean);
-    const unifiedGpuNames = gpuNames.filter((name: string) =>
+    // Cross-check the firmware model up front. On DGX Spark, nvidia-smi may
+    // identify the GPU as something like "NVIDIA JMJWOA-Generic-GPU" that
+    // matches none of UNIFIED_MEMORY_GPU_TAGS, even though the device is a
+    // unified-memory one (#3510). When firmware confirms a unified-memory
+    // platform, accept whatever name nvidia-smi reports.
+    const firmwarePlatform = detectNvidiaPlatform();
+    const firmwareIsUnifiedMemory =
+      firmwarePlatform === "spark" || firmwarePlatform === "jetson";
+    const taggedNames = gpuNames.filter((name: string) =>
       UNIFIED_MEMORY_GPU_TAGS.some((tag) => new RegExp(tag, "i").test(name)),
     );
+    const unifiedGpuNames =
+      taggedNames.length > 0 ? taggedNames : firmwareIsUnifiedMemory ? gpuNames : [];
     if (unifiedGpuNames.length > 0) {
-      let totalMemoryMB = 0;
-      try {
-        const freeOut = runCapture(["free", "-m"], { ignoreError: true });
-        if (freeOut) {
-          const memLine = freeOut.split("\n").find((l: string) => l.includes("Mem:"));
-          if (memLine) {
-            const parts = memLine.split(/\s+/);
-            totalMemoryMB = parseInt(parts[1], 10) || 0;
-          }
-        }
-      } catch {
-        /* ignored */
-      }
+      const totalMemoryMB = readHostMemoryMB();
       const count = unifiedGpuNames.length;
       const perGpuMB = count > 0 ? Math.floor(totalMemoryMB / count) : totalMemoryMB;
+      const firstUnifiedName = unifiedGpuNames[0] ?? "";
+      // Mirror the primary path: only surface a single name when every GPU
+      // reports the same model. Otherwise a hypothetical mixed unified-memory
+      // host (e.g. Spark + Orin) would be misrendered as `Nx <first model>`.
+      const allUnifiedSameName =
+        !!firstUnifiedName && unifiedGpuNames.every((n: string) => n === firstUnifiedName);
       // Cross-check the firmware model against the GPU name. Spark must have
       // a GB10; falling through to firmware lets us classify Station too.
-      const firmwarePlatform = detectNvidiaPlatform();
       const hasGb10 = unifiedGpuNames.some((name: string) => /GB10/i.test(name));
       const platform: NvidiaPlatform =
         firmwarePlatform === "spark" || hasGb10
           ? "spark"
           : firmwarePlatform === "station"
             ? "station"
+            : firmwarePlatform === "jetson"
+              ? "jetson"
             : "linux";
+      // Memory.total is not available on unified-memory devices, so we split
+      // the host RAM evenly across the named GPUs for the per-GPU breakdown.
+      // Approximation, but the only number nvidia-smi gives us in this path.
       return {
         type: "nvidia",
-        name: unifiedGpuNames[0],
+        ...(allUnifiedSameName ? { name: firstUnifiedName } : {}),
+        gpus: unifiedGpuNames.map((name: string) => ({ name, memoryMB: perGpuMB })),
         count,
         totalMemoryMB,
         perGpuMB: perGpuMB || totalMemoryMB,
@@ -231,6 +366,25 @@ export function detectGpu(): GpuDetection | null {
     }
   } catch {
     /* ignored */
+  }
+
+  // Jetson/Tegra hosts often do not ship nvidia-smi, but still expose the
+  // integrated NVIDIA GPU through firmware and Tegra device nodes.
+  const tegraGpu = detectTegraHostGpu();
+  if (tegraGpu) {
+    const totalMemoryMB = readHostMemoryMB();
+    return {
+      type: "nvidia",
+      name: tegraGpu.name,
+      gpus: [{ name: tegraGpu.name, memoryMB: totalMemoryMB }],
+      count: 1,
+      totalMemoryMB,
+      perGpuMB: totalMemoryMB,
+      nimCapable: canRunNimWithMemory(totalMemoryMB),
+      unifiedMemory: true,
+      spark: false,
+      platform: tegraGpu.platform,
+    };
   }
 
   // macOS: detect Apple Silicon or discrete GPU
@@ -326,39 +480,76 @@ export function pullNimImage(model: string): string {
   return image;
 }
 
-export function startNimContainer(sandboxName: string, model: string, port = VLLM_PORT): string {
-  const name = containerName(sandboxName);
-  return startNimContainerByName(name, model, port);
+export interface NimStartOptions {
+  ngcApiKey?: string;
 }
 
-export function startNimContainerByName(name: string, model: string, port = VLLM_PORT): string {
+export function startNimContainerByName(
+  name: string,
+  model: string,
+  port = VLLM_PORT,
+  opts: NimStartOptions = {},
+): string {
   const image = getImageForModel(model);
   if (!image) {
     console.error(`  Unknown model: ${model}`);
     process.exit(1);
   }
 
+  // Resolve the NGC key: explicit arg wins, then NGC_API_KEY, then NVIDIA_API_KEY
+  // (covers users who only set the NVIDIA key for cloud inference but reuse it
+  // against NGC). Without this, NIM's in-container model-manifest download
+  // returns "Authentication Error" and the container exits 0 a few seconds in.
+  // Regression of #210 — see #3333.
+  const ngcApiKey = opts.ngcApiKey ?? process.env.NGC_API_KEY ?? process.env.NVIDIA_API_KEY ?? "";
+  // Use `-e KEY` (no value) so the secret never appears in argv; pass the
+  // value through the spawn env instead. Docker reads each named var from
+  // its own process env and forwards it to the container.
+  const envFlags = ngcApiKey ? ["-e", "NGC_API_KEY", "-e", "NIM_NGC_API_KEY"] : [];
+  const runEnv = ngcApiKey
+    ? { NGC_API_KEY: ngcApiKey, NIM_NGC_API_KEY: ngcApiKey }
+    : undefined;
+  if (!ngcApiKey) {
+    console.warn(
+      "  No NGC API key available; NIM will fail to download model weights. " +
+        "Set NGC_API_KEY or pass it through onboard.",
+    );
+  }
+
   dockerForceRm(name, { ignoreError: true });
 
   console.log(`  Starting NIM container: ${name}`);
-  dockerRunDetached([
-    "--gpus",
-    "all",
-    "-p",
-    `${Number(port)}:8000`,
-    "--name",
-    name,
-    "--shm-size",
-    "16g",
-    image,
-  ]);
+  dockerRunDetached(
+    [
+      "--gpus",
+      "all",
+      "-p",
+      `${Number(port)}:8000`,
+      "--name",
+      name,
+      "--shm-size",
+      "16g",
+      ...envFlags,
+      image,
+    ],
+    runEnv ? { env: runEnv } : {},
+  );
   return name;
 }
 
-export function waitForNimHealth(port = VLLM_PORT, timeout = 300): boolean {
+export interface WaitForNimHealthOptions {
+  container?: string;
+}
+
+export function waitForNimHealth(
+  port = VLLM_PORT,
+  timeout = 300,
+  opts: WaitForNimHealthOptions = {},
+): boolean {
   const start = Date.now();
   const intervalSec = 5;
   const hostPort = Number(port);
+  const { container } = opts;
   console.log(`  Waiting for NIM health on port ${hostPort} (timeout: ${timeout}s)...`);
 
   while ((Date.now() - start) / 1000 < timeout) {
@@ -381,6 +572,26 @@ export function waitForNimHealth(port = VLLM_PORT, timeout = 300): boolean {
       }
     } catch {
       /* ignored */
+    }
+    // Short-circuit if the container has already exited — typically NGC auth
+    // failure or OOM during model load. Without this, the wizard polls the
+    // full timeout (default 300s) against a dead container. See #3333.
+    if (container) {
+      const state = dockerContainerInspectFormat("{{.State.Status}}", container, {
+        ignoreError: true,
+        timeout: NIM_STATUS_PROBE_TIMEOUT_MS,
+      });
+      if (state && state !== "running" && state !== "created" && state !== "restarting") {
+        console.error(`  NIM container ${container} is ${state}; aborting health wait.`);
+        const tail = dockerLogs(container, { tail: 30 });
+        if (tail) {
+          console.error("  Last container output:");
+          for (const line of tail.split("\n")) {
+            if (line) console.error(`    ${line}`);
+          }
+        }
+        return false;
+      }
     }
     sleepSeconds(intervalSec);
   }

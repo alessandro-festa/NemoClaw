@@ -11,6 +11,8 @@ const mocks = vi.hoisted(() => ({
   renderSandboxInventoryText: vi.fn(),
   runBackupAllAction: vi.fn(),
   runGarbageCollectImagesAction: vi.fn(),
+  runInferenceGet: vi.fn(),
+  runInferenceSet: vi.fn(),
   runOnboardAction: vi.fn(),
   runSetupAction: vi.fn(),
   runSetupSparkAction: vi.fn(),
@@ -18,7 +20,7 @@ const mocks = vi.hoisted(() => ({
   showStatusCommand: vi.fn(),
 }));
 
-vi.mock("../inventory-commands", () => ({
+vi.mock("../inventory", () => ({
   getSandboxInventory: mocks.getSandboxInventory,
   getStatusReport: mocks.getStatusReport,
   renderSandboxInventoryText: mocks.renderSandboxInventoryText,
@@ -42,6 +44,34 @@ vi.mock("../actions/global", () => ({
   runUpgradeSandboxesAction: mocks.runUpgradeSandboxesAction,
 }));
 
+vi.mock("../actions/inference-set", () => ({
+  InferenceSetError: class InferenceSetError extends Error {
+    exitCode: number;
+
+    constructor(message: string, exitCode = 1) {
+      super(message);
+      this.exitCode = exitCode;
+    }
+  },
+  runInferenceSet: mocks.runInferenceSet,
+}));
+
+vi.mock("../actions/inference-get", () => ({
+  InferenceGetError: class InferenceGetError extends Error {
+    exitCode: number;
+
+    constructor(message: string, exitCode = 1) {
+      super(message);
+      this.exitCode = exitCode;
+    }
+  },
+  runInferenceGet: mocks.runInferenceGet,
+}));
+
+import { InferenceGetError } from "../actions/inference-get";
+import { InferenceSetError } from "../actions/inference-set";
+import InferenceGetCommand from "./inference/get";
+import InferenceSetCommand from "./inference/set";
 import ListCommand from "./list";
 import BackupAllCommand from "./maintenance/backup-all";
 import GarbageCollectImagesCommand from "./maintenance/gc";
@@ -60,6 +90,15 @@ describe("global oclif command adapters", () => {
     mocks.buildStatusCommandDeps.mockReturnValue({ statusDeps: true });
     mocks.getSandboxInventory.mockResolvedValue({ sandboxes: [] });
     mocks.getStatusReport.mockReturnValue({ sandboxes: [] });
+    mocks.runInferenceSet.mockResolvedValue({
+      sandboxName: "alpha",
+      provider: "nvidia-prod",
+      model: "nvidia/model-a",
+      primaryModelRef: "inference/nvidia/model-a",
+      providerKey: "inference",
+      configChanged: true,
+      sessionUpdated: false,
+    });
   });
 
   afterEach(() => {
@@ -111,5 +150,55 @@ describe("global oclif command adapters", () => {
     expect(mocks.runOnboardAction).toHaveBeenCalledWith(["--resume", "--name", "alpha"]);
     expect(mocks.runSetupAction).toHaveBeenCalledWith(["--fresh"]);
     expect(mocks.runSetupSparkAction).toHaveBeenCalledWith(["--control-ui-port", "18080"]);
+  });
+
+  it("maps inference set flags into the inference action", async () => {
+    await InferenceSetCommand.run(
+      [
+        "--provider",
+        "nvidia-prod",
+        "--model",
+        "nvidia/nemotron-3-super-120b-a12b",
+        "--sandbox",
+        "alpha",
+        "--no-verify",
+      ],
+      rootDir,
+    );
+
+    expect(mocks.runInferenceSet).toHaveBeenCalledWith({
+      provider: "nvidia-prod",
+      model: "nvidia/nemotron-3-super-120b-a12b",
+      sandboxName: "alpha",
+      noVerify: true,
+    });
+  });
+
+  it("maps inference get flags into the inference action", async () => {
+    await InferenceGetCommand.run(["--json"], rootDir);
+
+    expect(mocks.runInferenceGet).toHaveBeenCalledWith({ json: true });
+  });
+
+  it("records inference action failures without throwing oclif ExitError", async () => {
+    const error = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const previousExitCode = process.exitCode;
+    process.exitCode = undefined;
+    try {
+      mocks.runInferenceGet.mockRejectedValueOnce(new InferenceGetError("route missing", 3));
+      mocks.runInferenceSet.mockRejectedValueOnce(new InferenceSetError("route rejected", 4));
+
+      await expect(InferenceGetCommand.run([], rootDir)).resolves.toBeUndefined();
+      expect(process.exitCode).toBe(3);
+      expect(error).toHaveBeenCalledWith("route missing");
+
+      await expect(
+        InferenceSetCommand.run(["--provider", "nvidia-prod", "--model", "nvidia/model-a"], rootDir),
+      ).resolves.toBeUndefined();
+      expect(process.exitCode).toBe(4);
+      expect(error).toHaveBeenCalledWith("route rejected");
+    } finally {
+      process.exitCode = previousExitCode;
+    }
   });
 });

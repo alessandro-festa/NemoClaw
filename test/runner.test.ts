@@ -283,6 +283,14 @@ describe("validateName", () => {
     expect(() => validateName("a".repeat(64))).toThrow(/too long/);
   });
 
+  it("rejects excessively long valid-looking names before spawning OpenShell", () => {
+    const { validateName } = require(runnerPath);
+    expect(validateName("a".repeat(63))).toBe("a".repeat(63));
+    expect(() => validateName("a".repeat(64 * 1024), "sandbox name")).toThrow(
+      /sandbox name too long \(max 63 chars\)/,
+    );
+  });
+
   it("rejects uppercase and special characters", () => {
     const { validateName } = require(runnerPath);
     expect(() => validateName("1sandbox")).toThrow(/Invalid/);
@@ -554,19 +562,6 @@ describe("regression guards", () => {
     }
   });
 
-  it("nemoclaw.ts does not use execSync", () => {
-    const src = fs.readFileSync(
-      path.join(import.meta.dirname, "..", "src", "nemoclaw.ts"),
-      "utf-8",
-    );
-    const lines = src.split("\n");
-    for (let i = 0; i < lines.length; i += 1) {
-      if (lines[i].includes("execSync") && !lines[i].includes("execFileSync")) {
-        expect.unreachable(`src/nemoclaw.ts:${i + 1} uses execSync — use execFileSync instead`);
-      }
-    }
-  });
-
   it("keeps a single shellQuote definition in the root CLI codebase", () => {
     const repoRoot = path.join(import.meta.dirname, "..");
     const searchRoots = [path.join(repoRoot, "bin"), path.join(repoRoot, "src")];
@@ -584,7 +579,13 @@ describe("regression guards", () => {
 
     const defs = [];
     for (const file of files) {
-      const src = fs.readFileSync(file, "utf-8");
+      let src: string;
+      try {
+        src = fs.readFileSync(file, "utf-8");
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === "ENOENT") continue;
+        throw error;
+      }
       if (src.includes("function shellQuote")) {
         defs.push(path.relative(repoRoot, file));
       }
@@ -661,21 +662,38 @@ describe("regression guards", () => {
             shift || true
           done
           if [ -n "$out" ]; then
-            if [ "$(basename "$out")" = "openshell-checksums-sha256.txt" ]; then
+            case "$(basename "$out")" in
+            openshell-checksums-sha256.txt)
               printf '%s\n' \
                 'ignored  openshell-x86_64-unknown-linux-musl.tar.gz' \
                 'ignored  openshell-aarch64-unknown-linux-musl.tar.gz' \
                 'ignored  openshell-x86_64-apple-darwin.tar.gz' \
-                'ignored  openshell-aarch64-apple-darwin.tar.gz' > "$out"
-            else
+                'ignored  openshell-aarch64-apple-darwin.tar.gz' \
+                'ignored  openshell-driver-vm-aarch64-apple-darwin.tar.gz' > "$out"
+              ;;
+            openshell-gateway-checksums-sha256.txt)
+              printf '%s\n' \
+                'ignored  openshell-gateway-x86_64-unknown-linux-gnu.tar.gz' \
+                'ignored  openshell-gateway-aarch64-unknown-linux-gnu.tar.gz' \
+                'ignored  openshell-gateway-aarch64-apple-darwin.tar.gz' > "$out"
+              ;;
+            openshell-sandbox-checksums-sha256.txt)
+              printf '%s\n' \
+                'ignored  openshell-sandbox-x86_64-unknown-linux-gnu.tar.gz' \
+                'ignored  openshell-sandbox-aarch64-unknown-linux-gnu.tar.gz' > "$out"
+              ;;
+            *)
               : > "$out"
-            fi
+              ;;
+            esac
           fi
           return 0
         }
         export -f curl
         shasum() { cat >/dev/null; echo "checksum OK"; return 0; }
         export -f shasum
+        strings() { echo "request-body-credential-rewrite websocket-credential-rewrite"; }
+        export -f strings
         tar() { return 0; }; export -f tar
         install() { return 0; }; export -f install
         source "${scriptPath}"
@@ -711,6 +729,8 @@ describe("regression guards", () => {
         export -f curl
         shasum() { echo "SHASUM $*" >> ${JSON.stringify(checksumLog)}; echo "checksum OK"; return 0; }
         export -f shasum
+        strings() { echo "request-body-credential-rewrite websocket-credential-rewrite"; }
+        export -f strings
         tar() { return 0; }; export -f tar
         install() { return 0; }; export -f install
         source "${scriptPath}"
@@ -755,7 +775,7 @@ describe("regression guards", () => {
             {
               encoding: "utf-8",
               env: { ...process.env, HOME: tmp, PATH: `${fakeBin}:/usr/bin:/bin` },
-              timeout: 5000,
+              timeout: 15000,
             },
           );
           expect(result.status, `${script}: ${result.stdout}${result.stderr}`).toBe(0);

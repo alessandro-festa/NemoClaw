@@ -1,13 +1,14 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-import { Args, Command, Flags } from "@oclif/core";
+import { Args, Flags } from "@oclif/core";
+import { NemoClawCommand } from "../../cli/nemoclaw-oclif-command";
 
 import { CLI_NAME } from "../../cli/branding";
-import { connectSandbox } from "../../actions/sandbox/runtime";
+import { connectSandbox } from "../../actions/sandbox/connect";
 import { connectToRemoteSandbox } from "../../remote-connect";
 
-export default class ConnectCliCommand extends Command {
+export default class ConnectCliCommand extends NemoClawCommand {
   static id = "sandbox:connect";
   static strict = true;
   static summary = "Shell into a running sandbox";
@@ -21,7 +22,6 @@ export default class ConnectCliCommand extends Command {
     sandboxName: Args.string({ name: "sandbox", description: "Sandbox name", required: true }),
   };
   static flags = {
-    help: Flags.help({ char: "h" }),
     "probe-only": Flags.boolean({ description: "Recover and check the sandbox without opening SSH" }),
     "dangerously-skip-permissions": Flags.boolean({ hidden: true }),
   };
@@ -44,9 +44,11 @@ export default class ConnectCliCommand extends Command {
 
     const { args, flags } = await this.parse(ConnectCliCommand);
     if (flags["dangerously-skip-permissions"]) {
-      console.error("  --dangerously-skip-permissions was removed; use shields commands instead.");
-      console.error(`  Usage: ${CLI_NAME} <name> connect [--probe-only]`);
-      process.exit(1);
+      this.failWithLines([
+        "  --dangerously-skip-permissions was removed; use shields commands instead.",
+        `  Usage: ${CLI_NAME} <name> connect [--probe-only]`,
+      ]);
+      return;
     }
     await connectSandbox(args.sandboxName, {
       probeOnly: Boolean(flags["probe-only"]),

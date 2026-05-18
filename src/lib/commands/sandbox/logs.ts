@@ -1,20 +1,26 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-import { Args, Command, Flags } from "@oclif/core";
+import { Args, Flags } from "@oclif/core";
+import { NemoClawCommand } from "../../cli/nemoclaw-oclif-command";
 
 import { logsSinceDurationFlag } from "../../cli/duration-flags";
 import type { SandboxLogsOptions } from "../../domain/sandbox/log-options";
 import { DEFAULT_SANDBOX_LOG_LINES } from "../../domain/sandbox/log-options";
-import { showSandboxLogs } from "../../actions/sandbox/runtime";
-
 type SandboxLogsRuntimeBridge = {
   sandboxLogs: (sandboxName: string, options: SandboxLogsOptions) => void;
 };
 
 const DEFAULT_SANDBOX_LOG_LINE_COUNT = Number(DEFAULT_SANDBOX_LOG_LINES);
 
-let runtimeBridgeFactory = (): SandboxLogsRuntimeBridge => ({ sandboxLogs: showSandboxLogs });
+let runtimeBridgeFactory = (): SandboxLogsRuntimeBridge => ({
+  sandboxLogs: (sandboxName, options) => {
+    const { showSandboxLogs } = require("../../actions/sandbox/logs") as {
+      showSandboxLogs: (sandboxName: string, options: SandboxLogsOptions) => void;
+    };
+    showSandboxLogs(sandboxName, options);
+  },
+});
 
 export function setSandboxLogsRuntimeBridgeFactoryForTest(
   factory: () => SandboxLogsRuntimeBridge,
@@ -26,7 +32,7 @@ function getRuntimeBridge() {
   return runtimeBridgeFactory();
 }
 
-export default class SandboxLogsCommand extends Command {
+export default class SandboxLogsCommand extends NemoClawCommand {
   static id = "sandbox:logs";
   static strict = true;
   static summary = "Stream sandbox logs";
@@ -46,7 +52,6 @@ export default class SandboxLogsCommand extends Command {
     }),
   };
   static flags = {
-    help: Flags.help({ char: "h" }),
     follow: Flags.boolean({ description: "Follow logs until interrupted" }),
     tail: Flags.integer({
       char: "n",

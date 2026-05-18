@@ -7,6 +7,7 @@
  * step-level progress tracking and file-based locking.
  */
 
+import { randomUUID } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 
@@ -28,6 +29,7 @@ export const LOCK_FILE = path.join(SESSION_DIR, "onboard.lock");
 type SessionJsonValue = JsonValue;
 type UnknownRecord = JsonObject;
 type StepStatus = "pending" | "in_progress" | "complete" | "failed" | "skipped";
+export type HermesAuthMethod = "oauth" | "api_key";
 
 const STEP_STATES: readonly StepStatus[] = [
   "pending",
@@ -75,6 +77,7 @@ export interface Session {
   model: string | null;
   endpointUrl: string | null;
   credentialEnv: string | null;
+  hermesAuthMethod: HermesAuthMethod | null;
   preferredInferenceApi: string | null;
   nimContainer: string | null;
   routerPid: number | null;
@@ -83,6 +86,14 @@ export interface Session {
   policyPresets: string[] | null;
   messagingChannels: string[] | null;
   messagingChannelConfig: MessagingChannelConfig | null;
+  // Channels the operator paused via `nemoclaw <sb> channels stop <ch>`.
+  // Mirrors `SandboxEntry.disabledChannels` so that `rebuild` — which
+  // destroys the registry entry before calling `onboard --resume` —
+  // can carry the paused set across the destroy/recreate window.
+  // Without this mirror, the disabledChannels filter inside createSandbox
+  // reads back `[]` from the freshly-empty registry and the channel
+  // comes back live after rebuild. See #(channels-stop-rebuild bug).
+  disabledChannels: string[] | null;
   // SHA-256 hex digest of every legacy credential value successfully
   // written to the OpenShell gateway during this onboard session, keyed by
   // env-name. Persisted across process restarts so a `--resume` run that
@@ -97,6 +108,7 @@ export interface Session {
   migratedLegacyValueHashes: Record<string, string> | null;
   gpuPassthrough: boolean;
   telegramConfig: TelegramConfig | null;
+  wechatConfig: WechatConfig | null;
   // remoteOnboard captures the SUSE AI Factory operator coordinates a
   // remote-mode `nemoclaw onboard --api-key X --server-url Y` ran with,
   // so a subsequent `nemoclaw onboard --resume` (with no flags) can
@@ -118,6 +130,18 @@ export interface TelegramConfig {
   requireMention: boolean;
 }
 
+export interface WechatConfig {
+  // Stable per-account id returned by iLink (`ilink_bot_id`). Non-secret.
+  accountId?: string;
+  // Per-account base URL. Rotates via IDC redirects, so a change here is a
+  // signal that we are now talking to a different gateway and the sandbox
+  // must be rebuilt.
+  baseUrl?: string;
+  // WeChat user id of the operator who scanned the QR. PII-adjacent but not
+  // secret — added to the DM allowlist by default.
+  userId?: string;
+}
+
 export interface LockInfo {
   pid: number;
   startedAt: string | null;
@@ -134,22 +158,28 @@ export interface LockResult {
 }
 
 export interface SessionUpdates {
-  sandboxName?: string;
-  provider?: string;
-  model?: string;
-  endpointUrl?: string;
-  credentialEnv?: string;
-  preferredInferenceApi?: string;
-  nimContainer?: string;
+  // Nullable fields accept `null` as an explicit clear (e.g. a provider
+  // switch from remote→local clears `credentialEnv`). `undefined` means
+  // "leave unchanged". See filterSafeUpdates(). GH #2625.
+  sandboxName?: string | null;
+  provider?: string | null;
+  model?: string | null;
+  endpointUrl?: string | null;
+  credentialEnv?: string | null;
+  hermesAuthMethod?: HermesAuthMethod | null;
+  preferredInferenceApi?: string | null;
+  nimContainer?: string | null;
   routerPid?: number;
   routerCredentialHash?: string;
   webSearchConfig?: WebSearchConfig | null;
   policyPresets?: string[];
   messagingChannels?: string[];
   messagingChannelConfig?: MessagingChannelConfig | null;
+  disabledChannels?: string[] | null;
   migratedLegacyValueHashes?: Record<string, string>;
   gpuPassthrough?: boolean;
   telegramConfig?: TelegramConfig | null;
+  wechatConfig?: WechatConfig | null;
   remoteOnboard?: RemoteOnboardSession | null;
   metadata?: { gatewayName?: string; fromDockerfile?: string | null };
 }
@@ -167,6 +197,7 @@ export interface DebugSessionSummary {
   model: string | null;
   endpointUrl: string | null;
   credentialEnv: string | null;
+  hermesAuthMethod: HermesAuthMethod | null;
   preferredInferenceApi: string | null;
   nimContainer: string | null;
   policyPresets: string[] | null;
@@ -185,10 +216,6 @@ function ensureSessionDir(): void {
 
 export function sessionPath(): string {
   return SESSION_FILE;
-}
-
-export function lockPath(): string {
-  return LOCK_FILE;
 }
 
 function defaultSteps(): Record<string, StepState> {
@@ -210,6 +237,10 @@ export function isObject(value: unknown): value is UnknownRecord {
 
 function readString(value: SessionJsonValue | undefined): string | null {
   return typeof value === "string" ? value : null;
+}
+
+function readHermesAuthMethod(value: SessionJsonValue | undefined): HermesAuthMethod | null {
+  return value === "oauth" || value === "api_key" ? value : null;
 }
 
 function readPositiveInteger(value: SessionJsonValue | undefined): number | null {
@@ -250,6 +281,18 @@ function parseTelegramConfig(value: unknown): TelegramConfig | null {
   if (value.requireMention === true) return { requireMention: true };
   if (value.requireMention === false) return { requireMention: false };
   return null;
+}
+
+function parseWechatConfig(value: unknown): WechatConfig | null {
+  if (!isObject(value)) return null;
+  const result: WechatConfig = {};
+  const accountId = readString(value.accountId);
+  const baseUrl = readString(value.baseUrl);
+  const userId = readString(value.userId);
+  if (accountId) result.accountId = accountId;
+  if (baseUrl) result.baseUrl = baseUrl;
+  if (userId) result.userId = userId;
+  return Object.keys(result).length > 0 ? result : null;
 }
 
 function parseRemoteOnboardSession(
@@ -307,17 +350,13 @@ export function sanitizeFailure(
   return step || message ? { step, message, recordedAt } : null;
 }
 
-export function validateStep(step: SessionJsonValue | undefined): boolean {
-  return parseStepState(step) !== null;
-}
-
 // ── Session CRUD ─────────────────────────────────────────────────
 
 export function createSession(overrides: Partial<Session> = {}): Session {
   const now = new Date().toISOString();
   return {
     version: SESSION_VERSION,
-    sessionId: overrides.sessionId ?? `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`,
+    sessionId: overrides.sessionId ?? `${Date.now()}-${randomUUID()}`,
     resumable: true,
     status: "in_progress",
     mode: overrides.mode ?? "interactive",
@@ -332,6 +371,7 @@ export function createSession(overrides: Partial<Session> = {}): Session {
     model: overrides.model ?? null,
     endpointUrl: overrides.endpointUrl ?? null,
     credentialEnv: overrides.credentialEnv ?? null,
+    hermesAuthMethod: overrides.hermesAuthMethod ?? null,
     preferredInferenceApi: overrides.preferredInferenceApi ?? null,
     nimContainer: overrides.nimContainer ?? null,
     routerPid: readPositiveInteger(overrides.routerPid),
@@ -341,11 +381,13 @@ export function createSession(overrides: Partial<Session> = {}): Session {
     policyPresets: readStringArray(overrides.policyPresets),
     messagingChannels: readStringArray(overrides.messagingChannels),
     messagingChannelConfig: sanitizeMessagingChannelConfig(overrides.messagingChannelConfig),
+    disabledChannels: readStringArray(overrides.disabledChannels),
     migratedLegacyValueHashes: overrides.migratedLegacyValueHashes
       ? readStringRecord(overrides.migratedLegacyValueHashes)
       : null,
     gpuPassthrough: overrides.gpuPassthrough === true,
     telegramConfig: parseTelegramConfig(overrides.telegramConfig),
+    wechatConfig: parseWechatConfig(overrides.wechatConfig),
     remoteOnboard: parseRemoteOnboardSession(overrides.remoteOnboard),
     metadata: {
       gatewayName: overrides.metadata?.gatewayName ?? "nemoclaw",
@@ -372,6 +414,7 @@ export function normalizeSession(data: Session | SessionJsonValue | undefined): 
     model: readString(data.model),
     endpointUrl: typeof data.endpointUrl === "string" ? redactUrl(data.endpointUrl) : null,
     credentialEnv: readString(data.credentialEnv),
+    hermesAuthMethod: readHermesAuthMethod(data.hermesAuthMethod),
     preferredInferenceApi: readString(data.preferredInferenceApi),
     nimContainer: readString(data.nimContainer),
     routerPid: readPositiveInteger(data.routerPid),
@@ -380,9 +423,11 @@ export function normalizeSession(data: Session | SessionJsonValue | undefined): 
     policyPresets: readStringArray(data.policyPresets),
     messagingChannels: readStringArray(data.messagingChannels),
     messagingChannelConfig: sanitizeMessagingChannelConfig(data.messagingChannelConfig),
+    disabledChannels: readStringArray(data.disabledChannels),
     migratedLegacyValueHashes: readStringRecord(data.migratedLegacyValueHashes),
     gpuPassthrough: data.gpuPassthrough === true,
     telegramConfig: parseTelegramConfig(data.telegramConfig),
+    wechatConfig: parseWechatConfig(data.wechatConfig),
     remoteOnboard: parseRemoteOnboardSession(data.remoteOnboard),
     lastStepStarted: readString(data.lastStepStarted),
     lastCompletedStep: readString(data.lastCompletedStep),
@@ -422,7 +467,7 @@ export function saveSession(session: Session): Session {
   ensureSessionDir();
   const tmpFile = path.join(
     SESSION_DIR,
-    `.onboard-session.${process.pid}.${Date.now()}.${Math.random().toString(36).slice(2, 8)}.tmp`,
+    `.onboard-session.${process.pid}.${Date.now()}.${randomUUID()}.tmp`,
   );
   fs.writeFileSync(tmpFile, JSON.stringify(normalized, null, 2), { mode: 0o600 });
   fs.renameSync(tmpFile, SESSION_FILE);
@@ -726,17 +771,58 @@ export function releaseOnboardLock(): void {
 
 // ── Step management ──────────────────────────────────────────────
 
+// Apply an explicit-clear-aware update for a nullable session field.
+//
+//   value === "string"  → assign (after optional normalizer)
+//   value === null      → explicit clear (persisted as null)
+//   value === undefined → leave unchanged (caller didn't supply this field)
+//
+// Before GH #2625 the persistence layer only accepted strings, which meant
+// a provider switch from remote (credentialEnv="OPENAI_API_KEY") to local
+// (credentialEnv=null) silently dropped the clear and left the stale value
+// on disk. The rebuild preflight then demanded a credential the current
+// sandbox does not actually need.
+function assignNullableString<K extends keyof Session>(
+  safe: Partial<Session>,
+  key: K,
+  value: unknown,
+  normalize?: (v: string) => string | null,
+): void {
+  if (value === undefined) return;
+  if (value === null) {
+    (safe as Record<K, Session[K] | null>)[key] = null as Session[K] & null;
+    return;
+  }
+  if (typeof value === "string") {
+    const normalized = normalize ? normalize(value) : value;
+    if (normalized === null) {
+      // A normalizer that returned null means the input was unredactable;
+      // treat the same as an explicit clear rather than dropping silently.
+      (safe as Record<K, Session[K] | null>)[key] = null as Session[K] & null;
+      return;
+    }
+    (safe as Record<K, Session[K]>)[key] = normalized as Session[K];
+  }
+  // Non-string, non-null, non-undefined values are silently dropped —
+  // matches the pre-#2625 behavior for malformed input (e.g. numbers via
+  // JSON re-entry).
+}
+
 export function filterSafeUpdates(updates: SessionUpdates): Partial<Session> {
   const safe: Partial<Session> = {};
   if (!isObject(updates)) return safe;
-  if (typeof updates.sandboxName === "string") safe.sandboxName = updates.sandboxName;
-  if (typeof updates.provider === "string") safe.provider = updates.provider;
-  if (typeof updates.model === "string") safe.model = updates.model;
-  if (typeof updates.endpointUrl === "string") safe.endpointUrl = redactUrl(updates.endpointUrl);
-  if (typeof updates.credentialEnv === "string") safe.credentialEnv = updates.credentialEnv;
-  if (typeof updates.preferredInferenceApi === "string")
-    safe.preferredInferenceApi = updates.preferredInferenceApi;
-  if (typeof updates.nimContainer === "string") safe.nimContainer = updates.nimContainer;
+  assignNullableString(safe, "sandboxName", updates.sandboxName);
+  assignNullableString(safe, "provider", updates.provider);
+  assignNullableString(safe, "model", updates.model);
+  assignNullableString(safe, "endpointUrl", updates.endpointUrl, redactUrl);
+  assignNullableString(safe, "credentialEnv", updates.credentialEnv);
+  if (updates.hermesAuthMethod === "oauth" || updates.hermesAuthMethod === "api_key") {
+    safe.hermesAuthMethod = updates.hermesAuthMethod;
+  } else if (updates.hermesAuthMethod === null) {
+    safe.hermesAuthMethod = null;
+  }
+  assignNullableString(safe, "preferredInferenceApi", updates.preferredInferenceApi);
+  assignNullableString(safe, "nimContainer", updates.nimContainer);
   if (typeof updates.routerPid === "number" && Number.isInteger(updates.routerPid) && updates.routerPid > 0) {
     safe.routerPid = updates.routerPid;
   }
@@ -760,6 +846,13 @@ export function filterSafeUpdates(updates: SessionUpdates): Partial<Session> {
     const messagingChannelConfig = sanitizeMessagingChannelConfig(updates.messagingChannelConfig);
     if (messagingChannelConfig) safe.messagingChannelConfig = messagingChannelConfig;
   }
+  if (updates.disabledChannels === null) {
+    safe.disabledChannels = null;
+  } else if (Array.isArray(updates.disabledChannels)) {
+    safe.disabledChannels = updates.disabledChannels.filter(
+      (value) => typeof value === "string",
+    );
+  }
   if (isObject(updates.migratedLegacyValueHashes)) {
     const cleaned: Record<string, string> = {};
     for (const [k, v] of Object.entries(updates.migratedLegacyValueHashes)) {
@@ -774,6 +867,12 @@ export function filterSafeUpdates(updates: SessionUpdates): Partial<Session> {
     safe.telegramConfig = { requireMention: updates.telegramConfig.requireMention };
   } else if (updates.telegramConfig === null) {
     safe.telegramConfig = null;
+  }
+  if (isObject(updates.wechatConfig)) {
+    const parsed = parseWechatConfig(updates.wechatConfig);
+    if (parsed) safe.wechatConfig = parsed;
+  } else if (updates.wechatConfig === null) {
+    safe.wechatConfig = null;
   }
   if (isObject(updates.metadata) && typeof updates.metadata.gatewayName === "string") {
     safe.metadata = {
@@ -879,6 +978,7 @@ export function summarizeForDebug(
     model: session.model,
     endpointUrl: redactUrl(session.endpointUrl),
     credentialEnv: session.credentialEnv,
+    hermesAuthMethod: session.hermesAuthMethod,
     preferredInferenceApi: session.preferredInferenceApi,
     nimContainer: session.nimContainer,
     policyPresets: session.policyPresets,

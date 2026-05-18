@@ -3,7 +3,8 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-const { loadMock, runCommandMock } = vi.hoisted(() => ({
+const { executeMock, loadMock, runCommandMock } = vi.hoisted(() => ({
+  executeMock: vi.fn(),
   loadMock: vi.fn(),
   runCommandMock: vi.fn(),
 }));
@@ -12,9 +13,10 @@ vi.mock("@oclif/core", () => ({
   Config: {
     load: loadMock,
   },
+  execute: executeMock,
 }));
 
-import { runRegisteredOclifCommand } from "./oclif-runner";
+import { runOclifArgv, runRegisteredOclifCommand } from "./oclif-runner";
 
 function makeConfig() {
   const rootPlugin = {
@@ -40,8 +42,31 @@ class UnexpectedArgsError extends Error {
   oclif = { exit: 2 };
 }
 
+describe("runOclifArgv", () => {
+  it("executes native oclif argv with branded package metadata", async () => {
+    const config = makeConfig();
+    loadMock.mockResolvedValue(config);
+    executeMock.mockResolvedValue(undefined);
+
+    await runOclifArgv(["sandbox", "channels", "start", "--help"], { rootDir: "/repo" });
+
+    expect(loadMock).toHaveBeenCalledWith("/repo");
+    expect(executeMock).toHaveBeenCalledWith({
+      args: ["sandbox", "channels", "start", "--help"],
+      loadOptions: {
+        root: "/repo",
+        pjson: config.pjson,
+      },
+    });
+    expect(config.pjson.oclif.bin).toBe("nemoclaw");
+    expect(config.options.pjson.oclif.bin).toBe("nemoclaw");
+    expect(config.plugins.get("root")?.pjson.oclif.bin).toBe("nemoclaw");
+  });
+});
+
 describe("runRegisteredOclifCommand", () => {
   beforeEach(() => {
+    executeMock.mockReset();
     runCommandMock.mockReset();
     loadMock.mockReset();
     loadMock.mockResolvedValue(makeConfig());
@@ -99,12 +124,57 @@ describe("runRegisteredOclifCommand", () => {
     expect(exit).toHaveBeenCalledWith(2);
   });
 
-  it("treats oclif help exits as success", async () => {
-    runCommandMock.mockRejectedValue({ oclif: { exit: 0 } });
+  it("treats oclif graceful ExitError(0) as silent success", async () => {
+    // Mirrors what `Command.exit(0)` and `--help` actually throw in oclif: an
+    // ExitError instance whose synthetic `EEXIT: 0` message must NOT leak to
+    // the user.
+    class ExitError extends Error {
+      oclif = { exit: 0 };
+    }
+    runCommandMock.mockRejectedValue(new ExitError("EEXIT: 0"));
+    const errorLine = vi.fn();
 
-    await runRegisteredOclifCommand("list", ["--help"], { rootDir: "/repo" });
+    await runRegisteredOclifCommand("list", ["--help"], { rootDir: "/repo", error: errorLine });
 
     expect(process.exitCode).toBe(0);
+    expect(errorLine).not.toHaveBeenCalled();
+  });
+
+  it("#2666: surfaces errors that happen to carry oclif.exit === 0 instead of swallowing them", async () => {
+    // Before #2666 this branch silently set exit 0 and produced no output.
+    // The bug was an arbitrary error riding the same `oclif.exit === 0`
+    // channel, e.g. propagated from inside a command's run(). Surface the
+    // message so the user gets signal.
+    class WeirdError extends Error {
+      oclif = { exit: 0 };
+    }
+    runCommandMock.mockRejectedValue(new WeirdError("Could not verify sandbox 'my-assist' against the live OpenShell gateway"));
+    const errorLine = vi.fn();
+
+    await runRegisteredOclifCommand("status", ["my-assist"], { rootDir: "/repo", error: errorLine });
+
+    expect(process.exitCode).toBe(0);
+    expect(errorLine).toHaveBeenCalledWith(
+      "  Could not verify sandbox 'my-assist' against the live OpenShell gateway",
+    );
+  });
+
+  it("#2666: falls back to a generic line when the error message is empty", async () => {
+    // Closes the residual silent path: if a non-ExitError(0) carries an
+    // empty message (or one that trims to empty), still emit *something*
+    // so the user is never left looking at exit 0 + blank stdout/stderr.
+    class BlankError extends Error {
+      oclif = { exit: 0 };
+    }
+    runCommandMock.mockRejectedValue(new BlankError(""));
+    const errorLine = vi.fn();
+
+    await runRegisteredOclifCommand("status", ["my-assist"], { rootDir: "/repo", error: errorLine });
+
+    expect(process.exitCode).toBe(0);
+    expect(errorLine).toHaveBeenCalledOnce();
+    const [line] = errorLine.mock.calls[0];
+    expect(String(line).trim().length).toBeGreaterThan(0);
   });
 
   it("rethrows non-parse command failures", async () => {

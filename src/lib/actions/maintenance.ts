@@ -1,16 +1,21 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-/* v8 ignore start -- exercised through CLI subprocess maintenance tests. */
 
 import { prompt as askPrompt } from "../credentials/store";
 import {
   type GarbageCollectImagesOptions,
   normalizeGarbageCollectImagesOptions,
 } from "../domain/lifecycle/options";
+import { CLI_NAME } from "../cli/branding";
 import { dockerListImagesFormat, dockerRmi } from "../adapters/docker";
 import { findOrphanedSandboxImages, parseSandboxImageRows } from "../domain/maintenance/images";
 import { captureOpenshell } from "../adapters/openshell/runtime";
+import {
+  detectOpenShellStateRpcPreflightIssue,
+  detectOpenShellStateRpcResultIssue,
+  printOpenShellStateRpcIssue,
+} from "../adapters/openshell/gateway-drift";
 import * as registry from "../state/registry";
 import { parseLiveSandboxNames } from "../runtime-recovery";
 import * as sandboxState from "../state/sandbox";
@@ -31,7 +36,29 @@ export function backupAll(): void {
     return;
   }
 
-  const liveList = captureOpenshell(["sandbox", "list"], { ignoreError: true });
+  const preflightIssue = detectOpenShellStateRpcPreflightIssue();
+  if (preflightIssue) {
+    printOpenShellStateRpcIssue(preflightIssue, {
+      action: "backing up registered sandboxes",
+      command: `${CLI_NAME} backup-all`,
+    });
+    process.exit(1);
+  }
+
+  const liveList = captureOpenshell(["sandbox", "list"]);
+  const resultIssue = detectOpenShellStateRpcResultIssue(liveList);
+  if (resultIssue) {
+    printOpenShellStateRpcIssue(resultIssue, {
+      action: "backing up registered sandboxes",
+      command: `${CLI_NAME} backup-all`,
+    });
+    process.exit(1);
+  }
+  if (liveList.status !== 0) {
+    console.error("  Failed to query running sandboxes from OpenShell.");
+    console.error("  Ensure OpenShell is running: openshell status");
+    process.exit(liveList.status || 1);
+  }
   const liveNames = parseLiveSandboxNames(liveList.output || "");
 
   let backed = 0;

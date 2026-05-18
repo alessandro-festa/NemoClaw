@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-import { Command } from "@oclif/core";
+import { NemoClawCommand } from "../cli/nemoclaw-oclif-command";
 
 import { runOnboardAction } from "../actions/global";
 import { loadSession } from "../state/onboard-session";
@@ -14,7 +14,7 @@ import {
   toLegacyOnboardArgs,
 } from "./onboard/common";
 
-export default class OnboardCliCommand extends Command {
+export default class OnboardCliCommand extends NemoClawCommand {
   static id = "onboard";
   static strict = true;
   static summary = "Configure inference endpoint and credentials";

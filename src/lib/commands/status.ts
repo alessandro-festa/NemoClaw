@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-import { getStatusReport, showStatusCommand } from "../inventory-commands";
+import { getStatusReport, showStatusCommand } from "../inventory";
 import { NemoClawCommand } from "../cli/nemoclaw-oclif-command";
 import { buildStatusCommandDeps } from "../status-command-deps";
 
@@ -19,7 +19,11 @@ export default class StatusCommand extends NemoClawCommand {
     await this.parse(StatusCommand);
     const deps = buildStatusCommandDeps(this.config.root);
     if (this.jsonEnabled()) {
-      return getStatusReport(deps);
+      const report = getStatusReport(deps);
+      if (report.gatewayHealth && !report.gatewayHealth.healthy) {
+        process.exitCode = 1;
+      }
+      return report;
     }
 
     showStatusCommand(deps);

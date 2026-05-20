@@ -18,3 +18,15 @@ export function resolveNemoclawStateDir(
 ): string {
   return path.join(resolveNemoclawHomeDir(homeDir), "state");
 }
+
+export function resolveNemoclawTrustedKeysDir(
+  homeDir: string = process.env.HOME ?? os.homedir(),
+): string {
+  return path.join(resolveNemoclawHomeDir(homeDir), "trusted-keys");
+}
+
+export function resolveNemoclawLocalDir(
+  homeDir: string = process.env.HOME ?? os.homedir(),
+): string {
+  return path.join(resolveNemoclawHomeDir(homeDir), "local");
+}

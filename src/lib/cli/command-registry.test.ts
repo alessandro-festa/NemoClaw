@@ -17,10 +17,10 @@ import { getRegisteredOclifCommandsMetadata } from "./oclif-metadata";
 
 describe("command-registry", () => {
   describe("COMMANDS array", () => {
-    it("should contain exactly 60 commands", () => {
-      // 27 global (21 visible + 6 hidden help/version aliases)
+    it("should contain exactly 61 commands", () => {
+      // 28 global (22 visible + 6 hidden help/version aliases)
       // 33 sandbox (27 visible + 6 hidden shields/config)
-      expect(COMMANDS).toHaveLength(60);
+      expect(COMMANDS).toHaveLength(61);
     });
 
     it("should have no duplicate usage strings", () => {
@@ -39,9 +39,9 @@ describe("command-registry", () => {
   });
 
   describe("globalCommands()", () => {
-    it("should return exactly 27 entries", () => {
-      // 21 visible + 6 hidden (help, --help, -h, version, --version, -v)
-      expect(globalCommands()).toHaveLength(27);
+    it("should return exactly 28 entries", () => {
+      // 22 visible + 6 hidden (help, --help, -h, version, --version, -v)
+      expect(globalCommands()).toHaveLength(28);
     });
 
     it("every entry has scope global", () => {
@@ -65,10 +65,10 @@ describe("command-registry", () => {
   });
 
   describe("visibleCommands()", () => {
-    it("should exclude 12 hidden commands (48 visible)", () => {
+    it("should exclude 12 hidden commands (49 visible)", () => {
       // 6 hidden global (help, --help, -h, version, --version, -v) +
       // 6 hidden sandbox (shields×3, config get/set/rotate-token)
-      expect(visibleCommands()).toHaveLength(48);
+      expect(visibleCommands()).toHaveLength(49);
     });
 
     it("no visible command has hidden=true", () => {
@@ -171,7 +171,7 @@ describe("command-registry", () => {
   });
 
   describe("globalCommandTokens()", () => {
-    it("returns the exact set of 23 tokens matching the global dispatch commands", () => {
+    it("returns the exact set of 24 tokens matching the global dispatch commands", () => {
       const tokens = globalCommandTokens();
       const expected = new Set([
         "onboard",
@@ -191,6 +191,7 @@ describe("command-registry", () => {
         "upgrade-sandboxes",
         "gc",
         "inference",
+        "run-local",
         "help",
         "version",
         "--help",

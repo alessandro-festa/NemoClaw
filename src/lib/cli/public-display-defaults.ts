@@ -93,6 +93,15 @@ const PUBLIC_DISPLAY_LAYOUT: Record<string, readonly PublicDisplayLayout[]> = {
       "description": "Use a custom Dockerfile for the sandbox image"
     }
   ],
+  "run-local": [
+    {
+      "group": "Sandbox Management",
+      "order": 10,
+      "usage": "nemoclaw run-local <bundle>",
+      "description": "Launch a sandbox from a signed offline bundle (EPIC #114)",
+      "flags": "[--allow-pull] [--trust-key <path>]"
+    }
+  ],
   "root:help": [
     {
       "group": "Getting Started",

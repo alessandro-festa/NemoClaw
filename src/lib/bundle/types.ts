@@ -31,6 +31,7 @@ export interface SandboxImageRef {
 
 export interface PolicyRef {
   snapshotPath: string;
+  rulesPath?: string; // OPA rules.rego — required for supervisor-fronted launch (US-154); omitempty on older bundles
   tier?: string;
 }
 

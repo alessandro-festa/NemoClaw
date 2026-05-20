@@ -71,15 +71,18 @@ describe("bundle round-trip via tarball", () => {
 
     const blueprintBytes = Buffer.from("name: round-trip-bp\n");
     const policyBytes = Buffer.from("version: 1\nallow: []\n");
+    const regoBytes = Buffer.from("package sandbox\n\ndefault allow = false\n");
 
     const stagingSrc = join(workDir, "src");
     mkdirSync(join(stagingSrc, "policy"), { recursive: true });
     writeFileSync(join(stagingSrc, "blueprint.yaml"), blueprintBytes);
     writeFileSync(join(stagingSrc, "policy", "effective.yaml"), policyBytes);
+    writeFileSync(join(stagingSrc, "policy", "rules.rego"), regoBytes);
 
     const files: FileEntry[] = [
       { path: "blueprint.yaml", sha256: sha256Hex(blueprintBytes) },
       { path: "policy/effective.yaml", sha256: sha256Hex(policyBytes) },
+      { path: "policy/rules.rego", sha256: sha256Hex(regoBytes) },
     ];
     const manifest: Manifest = {
       version: "1",
@@ -88,7 +91,7 @@ describe("bundle round-trip via tarball", () => {
       deployment: { name: "rt-demo", namespace: "aif-system", uid: "u9", generation: 1 },
       blueprint: { name: "round-trip-bp", version: "0.1.0" },
       sandboxImage: { ref: "ghcr.io/example/img@sha256:abc", embedded: false },
-      policy: { snapshotPath: "policy/effective.yaml", tier: "default" },
+      policy: { snapshotPath: "policy/effective.yaml", rulesPath: "policy/rules.rego", tier: "default" },
       cursor: { deploymentGeneration: 1 },
       files,
       signature: { scheme: "ed25519", publicKeyFingerprint: fp },

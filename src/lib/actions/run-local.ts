@@ -25,19 +25,22 @@ import {
   newSessionId,
   promoteStagingToSession,
 } from "../local/session";
+import { ensureSupervisorBinary, resolveSupervisorImage } from "../local/supervisor-bin";
 import { resolveNemoclawTrustedKeysDir } from "../state/paths";
 
 export interface RunLocalOptions {
   bundlePath: string;
-  trustKeyPath?: string; // Escape hatch: trust a single key file directly (for testing).
-  allowPull?: boolean;    // Permit `docker pull` when sandboxImage.embedded=false.
-  shell?: string;         // Override entrypoint shell; default /bin/bash.
+  trustKeyPath?: string;   // Escape hatch: trust a single key file directly (for testing).
+  allowPull?: boolean;     // Permit `docker pull` for sandbox image AND supervisor image when absent.
+  shell?: string;          // User-facing command inside the sandbox; default /bin/bash.
+  supervisorImage?: string; // Override the supervisor OCI image (env: NEMOCLAW_SUPERVISOR_IMAGE).
 }
 
 export interface RunLocalResult {
   sessionDir: string;
   deployment: string;
   sandboxImageRef: string;
+  supervisorImage: string;
 }
 
 // runLocal: verify, extract, launch. The full pipeline for `nemoclaw
@@ -99,18 +102,59 @@ export function runLocal(opts: RunLocalOptions): RunLocalResult {
         `bundle has sandboxImage.embedded=false; first run requires --allow-pull to fetch ${img.ref}`,
       );
     }
+
+    // Bundle must carry policy/rules.rego (US-154 — older bundles don't).
+    if (!manifest.policy.rulesPath) {
+      throw new Error(
+        `bundle is missing policy.rulesPath — re-export from an operator that includes the rego file (US-154)`,
+      );
+    }
+
+    // Side-load supervisor binary from its OCI image. Same image the
+    // operator uses in cluster mode (kept in sync via env override).
+    const supervisorImage = opts.supervisorImage ?? resolveSupervisorImage();
+    const supervisorBin = ensureSupervisorBinary({
+      image: supervisorImage,
+      allowPull: opts.allowPull,
+    });
+
     dockerPull(img.ref);
 
     const shell = opts.shell ?? "/bin/bash";
     const containerName = `nemoclaw-local-${manifest.deployment.name}-${sessionId.slice(0, 8)}`;
-    dockerRun(["run", "--rm", "-it", "--name", containerName, img.ref, shell], {
-      stdio: "inherit",
-    });
+    const auditDir = join(sessionDir, "audit");
+    mkdirSync(auditDir, { recursive: true, mode: 0o700 });
+
+    dockerRun(
+      [
+        "run",
+        "--rm",
+        "-it",
+        "--name", containerName,
+        // CAP_NET_ADMIN + CAP_SYS_ADMIN: supervisor sets up an isolated
+        // child network namespace + nftables ruleset inside the container.
+        // Without these caps the supervisor errors out at startup (see
+        // OpenShell/crates/openshell-sandbox/src/lib.rs:537-539).
+        "--cap-add=NET_ADMIN",
+        "--cap-add=SYS_ADMIN",
+        "-v", `${supervisorBin}:/opt/openshell/bin/openshell-sandbox:ro`,
+        "-v", `${join(sessionDir, "policy")}:/etc/openshell/policy:ro`,
+        "-v", `${auditDir}:/var/log:rw`,
+        "--entrypoint", "/opt/openshell/bin/openshell-sandbox",
+        img.ref,
+        "--policy-rules", "/etc/openshell/policy/rules.rego",
+        "--policy-data", "/etc/openshell/policy/effective.yaml",
+        "--",
+        shell,
+      ],
+      { stdio: "inherit" },
+    );
 
     return {
       sessionDir,
       deployment: manifest.deployment.name,
       sandboxImageRef: img.ref,
+      supervisorImage,
     };
   } catch (err) {
     rmStaging(stagingDir);

@@ -48,6 +48,14 @@ export function dockerRunDetached(args: readonly string[], opts: DockerRunOption
   return dockerRun(["run", "-d", ...args], opts);
 }
 
+export function dockerCreate(containerName: string, image: string, opts: DockerRunOptions = {}) {
+  return dockerRun(["create", "--name", containerName, image], opts);
+}
+
+export function dockerCp(src: string, dest: string, opts: DockerRunOptions = {}) {
+  return dockerRun(["cp", src, dest], opts);
+}
+
 export function dockerPort(
   containerName: string,
   containerPort: string | number,

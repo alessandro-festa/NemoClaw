@@ -93,6 +93,15 @@ const PUBLIC_DISPLAY_LAYOUT: Record<string, readonly PublicDisplayLayout[]> = {
       "description": "Use a custom Dockerfile for the sandbox image"
     }
   ],
+  "resync": [
+    {
+      "group": "Sandbox Management",
+      "order": 11,
+      "usage": "nemoclaw resync",
+      "description": "Resync local airgapped session audit logs to the operator (EPIC #114)",
+      "flags": "[--all|--session <name>|--session-path <dir>] [--server-url <url>] [--api-key <key>] [--dry-run]"
+    }
+  ],
   "run-local": [
     {
       "group": "Sandbox Management",

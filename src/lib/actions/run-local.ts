@@ -26,6 +26,7 @@ import {
   promoteStagingToSession,
 } from "../local/session";
 import { ensureSupervisorBinary, resolveSupervisorImage } from "../local/supervisor-bin";
+import { formatAuditSummary, summarizeAudit } from "../local/audit";
 import { resolveNemoclawTrustedKeysDir } from "../state/paths";
 
 export interface RunLocalOptions {
@@ -149,6 +150,15 @@ export function runLocal(opts: RunLocalOptions): RunLocalResult {
       ],
       { stdio: "inherit" },
     );
+
+    // Post-session audit summary (US-155). Best-effort: any IO error
+    // surfaces as an unsuccessful summarize call but doesn't fail
+    // run-local — the user has already exited the container.
+    try {
+      console.error(formatAuditSummary(summarizeAudit(auditDir), containerName));
+    } catch (err) {
+      console.error(`audit summary failed: ${(err as Error).message}`);
+    }
 
     return {
       sessionDir,
